@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>电脑八大件 · 拆解讲解</title>
+<meta name="description" content="可点击的 3D 元件探索器：点一个部件，镜头飞过去，它在你面前拆开。">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./dev/bundle.css">
+</head>
+<body>
+
+<div class="app" id="app">
+
+  <!-- 3D 舞台：铺满窗口；打开面板时右侧让出 --panel 宽度 -->
+  <canvas class="stage-canvas" id="stage"></canvas>
+
+  <!-- 左侧：标题 + 八个部件 -->
+  <div class="rail" id="rail">
+    <header class="masthead">
+      <h1 class="masthead__title">电脑八大件</h1>
+      <p class="masthead__sub">拆开一台电脑，看看每个部件到底在做什么。</p>
+    </header>
+
+    <nav class="picker" aria-label="八个部件">
+      <h2 class="picker__title">点一个部件</h2>
+      <ul class="picker__list" id="picker-list"><!-- JS 填充 --></ul>
+    </nav>
+
+    <p class="rail__foot">
+      拖动空白处旋转视角，滚轮缩放。<br>
+      键盘 <kbd>←</kbd> <kbd>→</kbd> 切换，<kbd>Esc</kbd> 回到全景。
+    </p>
+  </div>
+
+  <!-- 右侧：讲解面板 -->
+  <aside class="panel" id="panel" aria-hidden="true" aria-label="部件讲解">
+    <div class="panel__scroll" id="panel-scroll">
+      <button class="panel__back" id="panel-back" type="button">
+        <span aria-hidden="true">←</span> 回到全景
+      </button>
+
+      <p class="panel__en" id="panel-en"></p>
+      <h2 class="panel__name" id="panel-name"></h2>
+      <p class="panel__tagline" id="panel-tagline"></p>
+
+      <section class="block" id="block-principle">
+        <h3 class="block__title">它在做什么</h3>
+        <div class="block__body" id="panel-principle"></div>
+      </section>
+
+      <section class="block" id="block-legend">
+        <h3 class="block__title">拆开之后你会看到</h3>
+        <ul class="legend" id="panel-legend"></ul>
+      </section>
+
+      <section class="block" id="block-specs">
+        <h3 class="block__title">关键参数</h3>
+        <dl class="specs" id="panel-specs"></dl>
+      </section>
+    </div>
+
+    <footer class="panel__nav">
+      <button class="navbtn" id="nav-prev" type="button"><span aria-hidden="true">←</span> 上一个</button>
+      <span class="navbtn__pos num" id="nav-pos"></span>
+      <button class="navbtn" id="nav-next" type="button">下一个 <span aria-hidden="true">→</span></button>
+    </footer>
+  </aside>
+
+  <!-- 首屏提示 -->
+  <p class="cue" id="cue">点左边列表，或直接点场景里的部件</p>
+
+  <!-- 载入失败时的兜底（脚本没跑起来才会显示） -->
+  <noscript><p class="fallback">这个页面需要开启 JavaScript 才能显示 3D 场景。</p></noscript>
+</div>
+
+<script src="./dev/bundle.js"></script>
+</body>
+</html>

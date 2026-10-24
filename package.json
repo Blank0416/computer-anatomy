@@ -1,0 +1,16 @@
+{
+  "name": "computer-anatomy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "电脑八大件 · 可点击的 3D 拆解讲解（单文件 HTML，双击即开）",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "node build.mjs --dev",
+    "build": "node build.mjs",
+    "audit": "node tools/audit.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

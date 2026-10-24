@@ -1,0 +1,114 @@
+/* ============================================================
+   tokens.css — 电脑八大件 · 设计 token
+   深石墨底 + 莫兰迪色扇。所有颜色低饱和，明度集中在 45%–78%。
+   ============================================================ */
+
+:root {
+  /* ---------- 底色 / 表面（深石墨，带极弱的冷调） ---------- */
+  --ground:      #131519;   /* 页面底 */
+  --stage:       #171a1f;   /* 3D 舞台背景 */
+  --stage-deep:  #0f1114;   /* 舞台四周压暗 */
+  --surface:     #1d2127;   /* 面板 */
+  --surface-2:   #242931;   /* 面板高一层 */
+  --surface-3:   #2c323b;   /* 悬停/激活底 */
+  --edge:        #333a45;   /* 表面之间的色阶边 */
+
+  /* ---------- 文字（不用灰代替正文，正文用足墨色） ---------- */
+  --ink:         #e7e5e0;   /* 主文字 */
+  --ink-2:       #a9b0b8;   /* 次文字 */
+  --ink-3:       #6f7780;   /* 弱文字 / 标注 */
+
+  /* ---------- 八个元件的主色（低饱和莫兰迪扇，与 CONTRACT §3 一致） ---------- */
+  --hue-cpu:          #c9a98a;
+  --hue-motherboard:  #7fa3a8;
+  --hue-ram:          #8fa2be;
+  --hue-storage:      #a79bb8;
+  --hue-gpu:          #93ae94;
+  --hue-psu:          #bfa089;
+  --hue-cooler:       #9bb2c4;
+  --hue-case:         #b5b0a6;
+
+  /* 当前选中元件的强调色：由 JS 写在 .app 上，默认取 CPU 的暖砂 */
+  --accent:      #c9a98a;
+  --accent-soft: color-mix(in oklab, var(--accent) 22%, var(--surface));
+
+  /* ---------- 字体 ---------- */
+  /* 中文用微软雅黑（用户偏好，且本机一定在）；拉丁落回 Segoe UI Variable */
+  --font-sans: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI Variable Text",
+               "Segoe UI", system-ui, -apple-system, "PingFang SC", sans-serif;
+  --font-num:  "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+
+  /* ---------- 字号阶（5 级封顶） ---------- */
+  --t-display: clamp(2.6rem, 4.4vw, 4.1rem);  /* 首屏 / 选中元件名 */
+  --t-title:   clamp(1.35rem, 1.9vw, 1.7rem); /* 面板标题 */
+  --t-body:    0.98rem;                        /* 正文 15.7px */
+  --t-small:   0.82rem;                        /* 次要 */
+  --t-micro:   0.72rem;                        /* 标注 */
+
+  --lh-display: 0.98;
+  --lh-body:    1.72;
+
+  /* ---------- 空间 ---------- */
+  --gap-1: 6px;
+  --gap-2: 12px;
+  --gap-3: 20px;
+  --gap-4: 32px;
+  --gap-5: 52px;
+  --radius: 3px;          /* 直角为主，仅面板用极小圆角 */
+  --rail: 232px;          /* 左侧列表宽 */
+  --panel: 392px;         /* 右侧面板宽 */
+
+  /* ---------- 运动 ---------- */
+  --ease-out:  cubic-bezier(.22, .61, .36, 1);
+  --ease-soft: cubic-bezier(.4, .14, .3, 1);
+  --dur-ui:    420ms;
+  --dur-in:    620ms;
+}
+
+/* ============================================================
+   基础
+   ============================================================ */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: var(--lh-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior: none;
+}
+
+body { overflow: hidden; }   /* 全屏舞台，页面本身不滚动 */
+
+::selection { background: var(--accent); color: var(--ground); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+h1, h2, h3, p, ul, ol, figure { margin: 0; }
+ul, ol { padding: 0; list-style: none; }
+
+/* 数字统一等宽对齐 */
+.num, .specs__v, .legend__idx { font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-ui: 1ms; --dur-in: 1ms; }
+  * { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+}
