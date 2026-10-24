@@ -27,15 +27,16 @@ function buildEnvironment(renderer) {
   };
 
   // 主顶光（大而柔，略偏冷）
-  panel(0xdfe6ec, 1.95, 12, 12, [0, 8, 0.5], [Math.PI / 2, 0, 0]);
-  // 侧补光（暖一点点，给金属一点层次）
-  panel(0xc9c2b6, 0.95, 8, 10, [-7, 1.5, 2], [0, Math.PI / 2, 0]);
-  // 另一侧冷补
-  panel(0xa8bccb, 0.82, 8, 10, [7, 1.0, -1], [0, -Math.PI / 2, 0]);
+  panel(0xe2ecf4, 2.05, 12, 12, [0, 8, 0.5], [Math.PI / 2, 0, 0]);
+  // 暖侧：给金属和塑料一点暖调。全中性色的环境反射出来就是一整机灰，
+  // 冷暖两侧分开之后，同一个零件两面反射到的色相不同，体积感也一起出来了。
+  panel(0xd8bd97, 1.15, 8, 10, [-7, 1.5, 2], [0, Math.PI / 2, 0]);
+  // 冷侧：和暖侧拉开色相差
+  panel(0x8fb2d6, 1.0, 8, 10, [7, 1.0, -1], [0, -Math.PI / 2, 0]);
   // 背面勾边
-  panel(0xb9c4cc, 0.62, 10, 6, [0, 2, -8], [0, 0, 0]);
-  // 地面反弹（防止下半身死黑）
-  panel(0x3c434c, 0.8, 14, 14, [0, -6, 0], [-Math.PI / 2, 0, 0]);
+  panel(0x9fb0c2, 0.66, 10, 6, [0, 2, -8], [0, 0, 0]);
+  // 地面反弹（防止下半身死黑，带暖，像地板反上来的光）
+  panel(0x4a3a2e, 0.85, 14, 14, [0, -6, 0], [-Math.PI / 2, 0, 0]);
 
   const rt = pmrem.fromScene(env, 0.04);
   pmrem.dispose();
@@ -63,21 +64,24 @@ export function createStage(canvas) {
   const scene = new THREE.Scene();
   scene.environment = buildEnvironment(renderer);
   scene.environmentIntensity = 0.95;
-  // 极淡的雾：只让最远的元件稍微退到背景里。近端要收死，
-  // 否则对面的元件被雾压成一块黑，八个里有一半看不出是什么。
-  scene.fog = new THREE.Fog(0x171a1f, 17, 38);
+  // 极淡的雾：只让远处的地面和背景穹顶过渡到一起，机身本身离镜头不到
+  // 8 个单位，完全不吃雾。近端要收死，否则机箱会整块糊掉。
+  scene.fog = new THREE.Fog(0x171a1f, 9, 34);
 
-  const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 120);
-  camera.position.set(6.2, 3.4, 7.4);
+  const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 200);
+  camera.position.set(8.4, 6.0, 7.0);   // 与 main.js 的 ESTABLISH 一致，首帧不跳
 
-  /* ---------- 灯光 ---------- */
+  /* ---------- 灯光 ----------
+     用户反馈「颜色稍稍有点灰」。灰的根子不在材质（材质本来就是低饱和莫兰迪），
+     而在**光全是中性的**：暖白主光 + 冷调勾边分开之后，同一个零件的受光面
+     和背面拿到两个色相，画面立刻就"有色"了，而且不会变成糖果色。 */
 
-  // 半球光：天空略冷、地面略暖，压住整体对比，避免死黑
-  const hemi = new THREE.HemisphereLight(0xb9c6d2, 0x3a3630, 0.72);
+  // 半球光：天空冷、地面暖（暖地面还兼作"地板反弹"）
+  const hemi = new THREE.HemisphereLight(0xa9c3da, 0x4a352a, 0.74);
   scene.add(hemi);
 
-  // 主光：从右上前方打下，唯一投影的光源
-  const key = new THREE.DirectionalLight(0xe8eef4, 1.5);
+  // 主光：从右上前方打下，唯一投影的光源。暖白。
+  const key = new THREE.DirectionalLight(0xffe8c6, 1.55);
   key.position.set(5.5, 8.5, 4.5);
   key.castShadow = true;
   key.shadow.mapSize.set(2048, 2048);
@@ -91,14 +95,21 @@ export function createStage(canvas) {
   scene.add(key.target);
 
   // 左后冷补光：勾出金属边缘，让元件从深底里浮起来
-  const rim = new THREE.DirectionalLight(0x9fb6c8, 0.72);
+  const rim = new THREE.DirectionalLight(0x86b0dc, 0.86);
   rim.position.set(-6.5, 3.2, -5.5);
   scene.add(rim);
 
-  // 低角度暖补：照亮元件下缘，避免"飘着没有体积"
-  const fill = new THREE.DirectionalLight(0xc3ab90, 0.34);
+  // 低角度暖补：照亮元件下缘，避免"飘着没有体积"，也给底面一点暖
+  const fill = new THREE.DirectionalLight(0xd8ad7c, 0.42);
   fill.position.set(-2.5, -3.0, 4.0);
   scene.add(fill);
+
+  // 开口侧（+X）内腔补光：机箱自己的壁会把主光挡在外面，
+  // 不补这一盏，装进去的元件全埋在阴影里、只剩机箱外壳亮。
+  // 方向性补光、不投影 —— 只负责把内腔从黑提到能看清结构。
+  const inner = new THREE.DirectionalLight(0xbdd0e2, 0.55);
+  inner.position.set(5.2, 1.4, 1.8);
+  scene.add(inner);
 
   /* ---------- 主循环 ---------- */
 

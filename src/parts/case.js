@@ -1,10 +1,32 @@
-/* ============================================================
-   case.js — 机箱
-   拆解：外框 → 侧板 → 前面板（进风）→ 顶板 / 背板（出风）
-        → 主板托盘（理线位）→ 硬盘架 → 电源仓
-   动画：风道。冷空气从前面和下面进来，被元件加热后变轻，顺着
-        顶部和后部排出去 —— 这是机箱唯一的原理，也是它为什么长这样。
-   ============================================================ */
+/*
+ * case.js —— 机箱（外壳 / 开口侧 / 前部进风 / 顶部与后部出风 / 主板托盘 / 电源仓 / 风道）
+ *
+ * 真实硬件里它是唯一一个“不参与计算”的元件：它只干三件事——
+ *   ① 把主板、显卡、电源、硬盘固定在彼此正确的相对位置上（结构）
+ *   ② 给它们送冷空气、把热空气排走（风道）
+ *   ③ 把电磁辐射关在里面、顺便挡灰和降低噪声（屏蔽 / 防尘）
+ * 所以这台机箱的拆解叙述是“从外到内一层层卸壳”，而持续动画是“风道”。
+ *
+ * 拆解顺序（setExplode t=0 → 1）：
+ *   顶盖抬起 → 前面板前移（连同前部进风扇）→ 后部面板后移 → 封闭侧板向 -X 抽出
+ *   → 电源仓罩抬起 → 主板托盘向开口侧滑出 → 硬盘架抬起
+ *
+ * 坐标系（装配态；**原点在底板中心，Y=0 就是地面**）：
+ *   +Y 上（顶盖 / 顶部出风）
+ *   -Z 后部（I/O 挡板、PCIe 挡板、后置出风扇）
+ *   +Z 前部（进风口 / 前面板）
+ *   +X = 打开侧板的那一侧 = 观众看进去的方向 —— 这一侧**没有任何侧板几何体**
+ *        只保留上下导轨和两颗卡扣，内部一眼可见
+ *
+ * 外形（局部坐标，布局里 scale=1）：0.80(X) × 1.70(Y) × 1.72(Z)，壁厚 0.03
+ *   内部空腔：X∈[-0.37,0.37]、Y∈[0.03,1.67]、Z∈[-0.83,0.83]
+ * 主板托盘平面：平贴在 X≈-0.31 的竖板上（不是元件，是“主板坐的那块钢板”）
+ * 电源仓：底部靠后，Z 偏 -0.6 一带，Y 0.03~0.40
+ *
+ * focus（相对本元件原点）：从 +X 开口侧、前上方看整机，
+ *   from=[2.35,2.25,1.30]，look=[0,0.80,0]，fov=36 —— from 距 look ≈ 3.05，
+ *   俯角约 28°，水平方向离 +X 轴约 29°，正好既看进开口侧内部、又带一点前面板。
+ */
 
 export default {
   id: 'case',
@@ -12,509 +34,541 @@ export default {
   en: 'Case',
   hue: 0xb5b0a6,
 
-  // 机箱天生比别的件大，模型里再整体等比收到 0.70（见文件末"整体缩放"），
-  // 收完折算到环上的世界包围盒约 1.32×1.29×0.84 —— 不再压垮"八件等重"的构图。
-  // 机位按同一比例一起收，画面构图和设计时保持一致。
-  focus: { from: [1.46, 1.32, 1.55], look: [-0.01, 0.03, 0.01], fov: 36 },
+  // 机位（相对机箱原点）：+X 开口侧的前上方，距离 ≈3.0，look 在机箱中高位置
+  focus: { from: [2.35, 2.25, 1.30], look: [0, 0.80, 0], fov: 36 },
 
   build(kit) {
-    const { THREE } = kit;
-    const group = new THREE.Group();
-    const hue = 0xb5b0a6;
+    const T = kit.THREE;
+    const group = new T.Group();
 
-    /* ---------- 尺寸（中塔机箱：宽 0.94 / 高 1.82 / 深 1.72） ---------- */
-    const HX = 0.47;     // x 半宽（左 = 主板托盘侧，右 = 玻璃侧板）
-    const HY = 0.91;     // y 半高
-    const HZ = 0.86;     // z 半深（-z = 前面，+z = 后面）
-    const BEAM = 0.028;  // 框架钢梁厚度
-    const SCALE = 0.70;  // 整体等比缩放：机箱在环上要和其他七件"等重"
+    /* ================= 尺寸常量（对外硬指标，不要改） ================= */
+    const W = 0.80;        // 外形宽（X）
+    const H = 1.70;        // 外形高（Y）—— Y=0 是地面
+    const D = 1.72;        // 外形深（Z）
+    const T0 = 0.03;       // 壁厚
+    const HX = W / 2;      // 0.40
+    const HZ = D / 2;      // 0.86
+    const TRAY_X = -0.31;  // 主板托盘平面（主板就贴在这块钢板的 +X 面上）
 
-    /* ---------- 可拆解子系统登记表 ---------- */
-    const rigs = [];
-    const rig = (g, dx, dy, dz) => {
-      g.userData.base = g.position.clone();
-      rigs.push({ g, d: new THREE.Vector3(dx, dy, dz) });
-      return g;
-    };
+    /* ================= 材质（一律走 kit 材质库） ================= */
+    const steel = kit.mat('metal', { roughness: 0.58, metalness: 0.50, color: 0x5f666e }); // 磨砂钢构件
+    const sheet = kit.mat('metal', { roughness: 0.66, metalness: 0.42, color: 0x464d55 }); // 冲压外板 / 托盘
+    const dark = kit.mat('plasticDark', { roughness: 0.85, color: 0x1d2126 });             // 挡板 / 结构件
+    const mesh = kit.mat('plasticDark', { roughness: 0.95, color: 0x14171b });             // 防尘网 / 深色开口
+    const bezel = kit.mat('plasticDark', { roughness: 0.78, color: 0x2a2f36 });            // 前面板边框
+    const blade = kit.mat('plasticMid', { roughness: 0.68, metalness: 0.05, color: 0x878e96 }); // 扇叶
+    const rubber = kit.mat('rubber', {});                                                   // 减震垫
+    const screw = kit.mat('metal', { roughness: 0.40, metalness: 0.60, color: 0xb9bec4 });  // 手拧螺丝
+    const accent = kit.tint(0xb5b0a6, { rough: 0.45, metal: 0.25 });                        // 外壳标识色（只做点缀）
 
-    const beamMat = kit.mat('metalDark', { roughness: 0.56, metalness: 0.6 });
-    const beamMat2 = kit.mat('metalDark', { roughness: 0.5, metalness: 0.66, color: 0x4a5057 });
+    /* 风道光点：每个粒子要独立淡入淡出，所以 clone 一份 kit.glow 再改 opacity */
+    const AIR_COLD = new T.Color(0xa8bcc8); // 冷空气
+    const AIR_HOT = new T.Color(0xc99a74);  // 吸过热之后的空气
 
-    /* ============================================================
-       1. 外框：12 根钢梁焊成的笼子
-       机箱的所有强度都在这个框上 —— 侧板顶板其实只是"挡板"。
-       ============================================================ */
-    const frameG = new THREE.Group();
-    group.add(frameG);
+    /* =====================================================================
+     * 1. 底板与四角立柱 —— 整机的承重结构
+     * ===================================================================*/
+    const floor = kit.box(W, T0, D, steel);
+    floor.position.set(0, T0 / 2, 0); // Y 0~0.03：地面基准，min.y 必须是 0
+    group.add(floor);
 
-    // 4 根立柱
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-      const v = kit.box(BEAM, HY * 2, BEAM, beamMat);
-      v.position.set(sx * (HX - BEAM / 2), 0, sz * (HZ - BEAM / 2));
-      frameG.add(v);
+    // 底板加强筋（冲压出来的凸起，藏在箱内）
+    for (let i = 0; i < 3; i++) {
+      const rib = kit.box(W - 2 * T0, 0.006, 0.02, sheet);
+      rib.position.set(0, T0 + 0.002, -0.55 + i * 0.45);
+      group.add(rib);
     }
-    // 上下各 4 根横梁
-    for (const sy of [-1, 1]) {
+
+    // 四角立柱：把底板和顶框连成一副“笼子”
+    for (const sx of [-1, 1]) {
       for (const sz of [-1, 1]) {
-        const r = kit.box(BEAM, BEAM, HZ * 2, beamMat);
-        r.position.set(sz * (HX - BEAM / 2), sy * (HY - BEAM / 2), 0);
-        frameG.add(r);
-      }
-      for (const sx of [-1, 1]) {
-        const r = kit.box(HX * 2, BEAM, BEAM, beamMat);
-        r.position.set(0, sy * (HY - BEAM / 2), sx * (HZ - BEAM / 2));
-        frameG.add(r);
-      }
-    }
-    // 四只橡胶脚垫（让机箱离地，底部电源才有进气空间）
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-      const foot = kit.cyl(0.045, 0.045, 0.020, 10, kit.mats.rubber);
-      foot.position.set(sx * (HX - 0.10), -HY + 0.012, sz * (HZ - 0.10));
-      frameG.add(foot);
-    }
-    // 机箱内部的走线横梁（电源线、风扇线都从这里捆）
-    const tie = kit.box(HX * 2 - 0.10, 0.020, 0.020, beamMat2);
-    tie.position.set(0, 0.62, -0.74);
-    frameG.add(tie);
-
-    /* ============================================================
-       2. 侧板：钢化玻璃，能直接看到里面的风道
-       ============================================================ */
-    const glassG = new THREE.Group();
-    group.add(glassG);
-    rig(glassG, 0.34, 0, 0);
-    {
-      const panel = kit.box(0.010, HY * 2 - 0.08, HZ * 2 - 0.16, kit.mats.glass);
-      panel.position.set(HX + 0.010, 0, 0);
-      glassG.add(panel);
-      // 四角的手拧螺丝
-      for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
-        const sc = kit.cyl(0.024, 0.024, 0.016, 8, kit.mats.metal);
-        sc.rotation.z = Math.PI / 2;
-        sc.position.set(HX + 0.028, sy * (HY - 0.10), sz * (HZ - 0.10));
-        glassG.add(sc);
+        const post = kit.box(T0, H - 2 * T0, T0, steel);
+        post.position.set(sx * (HX - T0 / 2), H / 2, sz * (HZ - T0 / 2));
+        group.add(post);
       }
     }
 
-    /* ============================================================
-       3. 前面板：进风口
-       冷空气从这里被抽进来 —— 所以前面板一定要"漏"，不能是块实心板。
-       ============================================================ */
-    const frontG = new THREE.Group();
-    group.add(frontG);
-    rig(frontG, 0, 0.02, -0.20);
-    {
-      const z = -HZ - 0.005;
-      // 外框四边
-      for (const [w, h, px, py] of [[HX * 2, 0.06, 0, HY - 0.03], [HX * 2, 0.06, 0, -HY + 0.03], [0.06, HY * 2, -HX + 0.03, 0], [0.06, HY * 2, HX - 0.03, 0]]) {
-        const b = kit.box(w, h, 0.030, beamMat);
-        b.position.set(px, py, z);
-        frontG.add(b);
-      }
-      // 进风栅格：18 条横片，风就从缝里进去
-      const geo = new THREE.BoxGeometry(HX * 2 - 0.16, 0.020, 0.024);
-      const slats = new THREE.InstancedMesh(geo, beamMat2, 18);
-      const m4 = new THREE.Matrix4();
-      for (let i = 0; i < 18; i++) slats.setMatrixAt(i, m4.makeTranslation(0, -0.76 + i * 0.0835, z));
-      slats.instanceMatrix.needsUpdate = true;
-      slats.castShadow = true;
-      frontG.add(slats);
-      // 内侧的防尘网：风要进来，灰得留下（两层交叉的细条，缝里还能看见箱内）
-      const meshMat = kit.mat('plasticMid', { roughness: 0.88, metalness: 0.02, color: 0x4a5158 });
-      const hGeo = new THREE.BoxGeometry(HX * 2 - 0.22, 0.006, 0.012);
-      const hMesh = new THREE.InstancedMesh(hGeo, meshMat, 14);
-      for (let i = 0; i < 14; i++) hMesh.setMatrixAt(i, m4.makeTranslation(0, -0.72 + i * 0.111, z + 0.030));
-      hMesh.instanceMatrix.needsUpdate = true;
-      frontG.add(hMesh);
-      const vGeo = new THREE.BoxGeometry(0.006, HY * 2 - 0.30, 0.012);
-      const vMesh = new THREE.InstancedMesh(vGeo, meshMat, 8);
-      for (let i = 0; i < 8; i++) vMesh.setMatrixAt(i, m4.makeTranslation(-0.34 + i * 0.097, 0, z + 0.024));
-      vMesh.instanceMatrix.needsUpdate = true;
-      frontG.add(vMesh);
-      // 顶部的开机键和指示灯
-      const io = kit.box(HX * 2 - 0.28, 0.075, 0.035, kit.mat('plasticDark', { roughness: 0.75 }));
-      io.position.set(0, 0.78, z - 0.010);
-      frontG.add(io);
-      const btn = kit.cyl(0.028, 0.028, 0.014, 12, kit.mat('metal', { roughness: 0.35, metalness: 0.85 }));
-      btn.rotation.x = Math.PI / 2;
-      btn.position.set(0.22, 0.78, z - 0.030);
-      frontG.add(btn);
-      const power = kit.dot(-0.16, 0.78, z - 0.030, kit.glow(hue, 2.0), 0.014);
-      frontG.add(power);
-      const hdd = kit.dot(-0.06, 0.78, z - 0.030, kit.glow(0xbfa089, 1.4), 0.011);
-      frontG.add(hdd);
-    }
-
-    /* ============================================================
-       4. 顶板：出风口（配一条一条的散热栅）
-       热空气变轻自己往上走 —— 顶上必须给它留一条路。
-       ============================================================ */
-    const topG = new THREE.Group();
-    group.add(topG);
-    rig(topG, 0, 0.20, 0);
-    {
-      const y = HY + 0.008;
-      // 边框
-      for (const [w, d, px, pz] of [[HX * 2, 0.08, 0, HZ - 0.04], [HX * 2, 0.08, 0, -HZ + 0.04], [0.08, HZ * 2, HX - 0.04, 0], [0.08, HZ * 2, -HX + 0.04, 0]]) {
-        const b = kit.box(w, 0.022, d, beamMat);
-        b.position.set(px, y, pz);
-        topG.add(b);
-      }
-      // 中间的散热栅：10 条横片（缝里能看见机箱内部）
-      const geo = new THREE.BoxGeometry(HX * 2 - 0.20, 0.016, 0.042);
-      const slats = new THREE.InstancedMesh(geo, beamMat2, 10);
-      const m4 = new THREE.Matrix4();
-      for (let i = 0; i < 10; i++) slats.setMatrixAt(i, m4.makeTranslation(0, y, -0.68 + i * 0.152));
-      slats.instanceMatrix.needsUpdate = true;
-      slats.castShadow = true;
-      topG.add(slats);
-    }
-
-    /* ============================================================
-       5. 背板：主板 I/O、显卡挡板、后部排风扇都在这儿
-       ============================================================ */
-    const backG = new THREE.Group();
-    group.add(backG);
-    rig(backG, 0, 0, 0.06);
-    {
-      const z = HZ - 0.012;
-      for (const [w, h, px, py] of [[HX * 2, 0.06, 0, HY - 0.03], [HX * 2, 0.06, 0, -HY + 0.03], [0.06, HY * 2, -HX + 0.03, 0], [0.06, HY * 2, HX - 0.03, 0], [HX * 2 - 0.12, 0.05, 0, 0.62]]) {
-        const b = kit.box(w, h, 0.025, beamMat);
-        b.position.set(px, py, z);
-        backG.add(b);
-      }
-      // 主板后置 I/O 的开窗（这块方洞是主板那排接口伸出来的地方）
-      const shield = kit.box(0.46, 0.20, 0.030, beamMat2);
-      shield.position.set(-0.20, 0.75, z);
-      backG.add(shield);
-      for (let i = 0; i < 4; i++) {
-        const hole = kit.box(0.09, 0.05, 0.036, kit.mats.plasticDark);
-        hole.position.set(-0.34 + i * 0.10, 0.75, z);
-        backG.add(hole);
-      }
-      // 7 条 PCIe 挡板（不用的槽位要拿挡板挡住，否则机箱漏风）
-      const geo = new THREE.BoxGeometry(0.46, 0.045, 0.020);
-      const slots = new THREE.InstancedMesh(geo, beamMat2, 7);
-      const m4 = new THREE.Matrix4();
-      for (let i = 0; i < 7; i++) slots.setMatrixAt(i, m4.makeTranslation(-0.07, -0.60 + i * 0.09, z));
-      slots.instanceMatrix.needsUpdate = true;
-      slots.castShadow = true;
-      backG.add(slots);
-    }
-
-    /* ============================================================
-       6. 主板托盘：一块竖着的钢板
-       正面拧铜柱、上主板；背面的两三厘米专门用来塞电源线 ——
-       这就是"理线位"的意义：线不走风道，风才顺畅。
-       ============================================================ */
-    const trayG = new THREE.Group();
-    group.add(trayG);
-    rig(trayG, -0.10, 0, 0);
-    {
-      const tray = kit.box(0.016, 1.10, 1.40, kit.mat('metalDark', { roughness: 0.60, metalness: 0.55, color: 0x525a63 }));
-      tray.position.set(-0.30, 0.28, 0);
-      trayG.add(tray);
-
-      /* 托盘上的细节 —— 全部朝向玻璃侧板那一面：
-         侧板半透明之后，透过它看进去不能只是一块黑板。 */
-      // CPU 背板开窗：真机箱在托盘上挖的方洞，给散热器背板腾位置
-      const cut = kit.box(0.010, 0.42, 0.42, kit.mat('metalDark', { roughness: 0.72, metalness: 0.32, color: 0x2c3238 }));
-      cut.position.set(-0.288, 0.50, -0.40);
-      trayG.add(cut);
-      // 开窗四周的翻边
-      for (const [w, h, d, py, pz] of [
-        [0.014, 0.020, 0.44, 0.72, -0.40],
-        [0.014, 0.020, 0.44, 0.28, -0.40],
-        [0.014, 0.46, 0.020, 0.50, -0.62],
-        [0.014, 0.46, 0.020, 0.50, -0.18],
-      ]) {
-        const rim = kit.box(w, h, d, kit.mat('metalDark', { roughness: 0.55, metalness: 0.60, color: 0x5d656e }));
-        rim.position.set(-0.282, py, pz);
-        trayG.add(rim);
-      }
-      // 两个 2.5" 硬盘位：钢板 + 一块浅色标签，是这面墙上最亮的细节
-      for (const dz of [0.22, 0.36]) {
-        const ssd = kit.box(0.012, 0.16, 0.11, kit.mat('metalDark', { roughness: 0.50, metalness: 0.60, color: 0x5a6169 }));
-        ssd.position.set(-0.288, 0.10, dz);
-        trayG.add(ssd);
-        const lbl = kit.box(0.004, 0.10, 0.075, kit.mat('plasticMid', { roughness: 0.62 }));
-        lbl.position.set(-0.280, 0.10, dz);
-        trayG.add(lbl);
-      }
-      // 线束：从前面板一路绕进箱底 —— 理线位就是给它们留的
-      const bundleMat = kit.mat('rubber', { roughness: 0.88, metalness: 0.02 });
-      for (let i = 0; i < 4; i++) {
-        const wire = kit.trace([
-          [-0.286, 0.86 - i * 0.030, -0.66],
-          [-0.286, 0.60 - i * 0.026, -0.70],
-          [-0.286, 0.08 - i * 0.016, -0.64],
-        ], 0.011, bundleMat, 12);
-        trayG.add(wire);
-      }
-      // 显卡支撑架：长显卡尾部会自己往下坠，这根柱子顶着它
-      const post = kit.box(0.020, 0.44, 0.020, kit.mat('metalDark', { roughness: 0.50, metalness: 0.62, color: 0x596069 }));
-      post.position.set(-0.286, 0.26, 0.58);
-      trayG.add(post);
-      const clamp = kit.box(0.032, 0.020, 0.10, kit.mat('plasticDark', { roughness: 0.72 }));
-      clamp.position.set(-0.276, 0.48, 0.58);
-      trayG.add(clamp);
-      // 6 根铜柱（主板就拧在它们上面，板子背面因此能走线）
-      for (const [dy, dz] of [[-0.55, -0.60], [-0.55, 0.60], [0.55, -0.60], [0.55, 0.60], [0.55, 0.0], [-0.20, 0.0]]) {
-        const st = kit.cyl(0.022, 0.022, 0.045, 8, kit.mats.gold);
-        st.rotation.z = Math.PI / 2;
-        st.position.set(-0.272, 0.28 + dy, dz);
-        trayG.add(st);
-      }
-      // 三个理线孔（橡胶圈，线从这儿穿过托盘到背面）
-      for (const dy of [0.42, 0.06, -0.34]) {
-        const ring = kit.cyl(0.070, 0.070, 0.024, 14, kit.mats.rubber);
-        ring.rotation.z = Math.PI / 2;
-        ring.position.set(-0.292, 0.28 + dy, -0.60);
-        trayG.add(ring);
-        const hole = kit.cyl(0.055, 0.055, 0.028, 12, kit.mats.plasticDark);
-        hole.rotation.z = Math.PI / 2;
-        hole.position.set(-0.292, 0.28 + dy, -0.60);
-        trayG.add(hole);
-      }
-      // 托盘前缘的走线槽
-      const ch = kit.box(0.020, 0.90, 0.06, kit.mats.rubber);
-      ch.position.set(-0.292, 0.30, -0.70);
-      trayG.add(ch);
-    }
-
-    /* ============================================================
-       7. 硬盘架：压在箱底前半部
-       机械硬盘最怕震，所以它固定在钢架上，还垫了橡胶。
-       ============================================================ */
-    const cageG = new THREE.Group();
-    group.add(cageG);
-    rig(cageG, 0, 0, -0.16);
-    {
-      const CX = -0.26, CY = -0.66, CZ = -0.42;   // 架子中心
-      for (const dz of [-0.20, 0.20]) {
-        const side = kit.box(0.34, 0.38, 0.018, beamMat);
-        side.position.set(CX, CY, CZ + dz);
-        cageG.add(side);
-      }
-      const backp = kit.box(0.018, 0.38, 0.42, beamMat);
-      backp.position.set(CX - 0.16, CY, CZ);
-      cageG.add(backp);
-      // 3 个硬盘托（每个托上放一块硬盘，前面那个把手露在外面）
-      for (let i = 0; i < 3; i++) {
-        const y = CY + 0.13 - i * 0.13;
-        const sled = kit.box(0.30, 0.040, 0.40, beamMat2);
-        sled.position.set(CX + 0.02, y, CZ);
-        cageG.add(sled);
-        const pad = kit.box(0.28, 0.012, 0.36, kit.mats.rubber);
-        pad.position.set(CX + 0.02, y + 0.026, CZ);
-        cageG.add(pad);
-        const handle = kit.box(0.06, 0.030, 0.05, kit.mat('plasticDark', { roughness: 0.75 }));
-        handle.position.set(CX + 0.02, y, CZ - 0.22);
-        cageG.add(handle);
-        // 托盘侧面的标签条：压在箱底的硬盘架也得有细节可看
-        const tag = kit.box(0.006, 0.026, 0.20, kit.mat('plasticMid', { roughness: 0.62 }));
-        tag.position.set(CX + 0.175, y, CZ);
-        cageG.add(tag);
+    // 四角橡胶脚垫（整机垫高一点，底部进风口才吸得到风）
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const foot = kit.box(0.07, 0.004, 0.07, rubber);
+        foot.position.set(sx * 0.32, 0.002, sz * 0.78);
+        group.add(foot);
       }
     }
 
-    /* ============================================================
-       8. 电源仓：把电源罩在箱底下
-       罩子不是为了好看 —— 罩住之后电源自己走一条独立风道，
-       不跟上面抢风，机箱里也空出一块走线的地方。
-       ============================================================ */
-    const shroudG = new THREE.Group();
-    group.add(shroudG);
-    rig(shroudG, 0, 0, 0.16);
-    {
-      const top = kit.box(HX * 2 - 0.06, 0.020, 0.76, beamMat2);
-      top.position.set(0, -0.57, 0.46);
-      shroudG.add(top);
-      const face = kit.box(HX * 2 - 0.06, 0.31, 0.016, beamMat2);
-      face.position.set(0, -0.725, 0.085);
-      shroudG.add(face);
-      // 罩子上的散热缝
-      const geo = new THREE.BoxGeometry(0.70, 0.014, 0.030);
-      const grille = new THREE.InstancedMesh(geo, kit.mat('plasticDark', { roughness: 0.8 }), 6);
-      const m4 = new THREE.Matrix4();
-      for (let i = 0; i < 6; i++) grille.setMatrixAt(i, m4.makeTranslation(0, -0.565, 0.20 + i * 0.10));
-      grille.instanceMatrix.needsUpdate = true;
-      shroudG.add(grille);
-      // 罩子里露出来的一角电源（说明这里是装电源的位置）
-      const psu = kit.box(0.40, 0.26, 0.30, kit.mat('metalDark', { roughness: 0.58, metalness: 0.6, color: 0x3f454b }));
-      psu.position.set(0.02, -0.745, 0.42);
-      shroudG.add(psu);
+    /* ------------- 开口侧（+X）：只有导轨与卡扣，没有侧板 ------------- */
+    for (const y of [0.045, H - T0 - 0.015]) {
+      const rail = kit.box(0.02, 0.03, D - 2 * T0, sheet);
+      rail.position.set(HX - 0.01, y, 0);
+      group.add(rail);
+    }
+    for (const sz of [-1, 1]) {
+      const latch = kit.box(0.018, 0.05, 0.018, dark); // 侧板卡扣：侧板就是扣在这两颗上的
+      latch.position.set(HX - 0.012, 0.85, sz * 0.80);
+      group.add(latch);
     }
 
-    /* ============================================================
-       9. 风扇：前面两个进气、后面一个排气
-       风扇自己不制冷，它只负责让空气流动 —— 把热搬出去的是"流过去的空气"。
-       ============================================================ */
-    const fans = [];
+    /* =====================================================================
+     * 2. 顶盖与顶部出风（拆解时整体抬起）
+     * ===================================================================*/
+    const topG = new T.Group();
+
+    // 顶框四条边
+    for (const sx of [-1, 1]) {
+      const rail = kit.box(T0, T0, D - 2 * T0, steel);
+      rail.position.set(sx * (HX - T0 / 2), H - T0 / 2, 0);
+      topG.add(rail);
+    }
+    for (const sz of [-1, 1]) {
+      const rail = kit.box(W - 2 * T0, T0, T0, steel);
+      rail.position.set(0, H - T0 / 2, sz * (HZ - T0 / 2));
+      topG.add(rail);
+    }
+
+    // 顶部出风槽：11 条细缝（InstancedMesh，不逐条 new box）
+    const m4 = new T.Matrix4();
+    const ventGeo = new T.BoxGeometry(0.64, 0.014, 0.030);
+    const vents = new T.InstancedMesh(ventGeo, dark, 11);
+    vents.castShadow = true;
+    vents.receiveShadow = true;
+    for (let i = 0; i < 11; i++) {
+      m4.makeTranslation(0, H - 0.014, (i - 5) * 0.11);
+      vents.setMatrixAt(i, m4);
+    }
+    vents.instanceMatrix.needsUpdate = true;
+    topG.add(vents);
+
+    // 顶盖内侧防尘网（热风往上走，这里最容易积灰）
+    const topMesh = kit.box(0.64, 0.006, 1.24, mesh);
+    topMesh.position.set(0, H - 0.028, 0);
+    topG.add(topMesh);
+
+    // 顶盖两颗手拧螺丝（拆机第一件事就是拧这两颗）
+    for (const sx of [-1, 1]) {
+      const thumb = kit.cyl(0.016, 0.016, 0.010, 10, screw);
+      thumb.position.set(sx * 0.345, H - 0.005, -0.80);
+      topG.add(thumb);
+    }
+
+    /* =====================================================================
+     * 3. 前面板：进风 + 前置 I/O（拆解时整体前移）
+     * ===================================================================*/
+    const frontG = new T.Group();
+
+    // 上横梁（含前置 I/O）与下横梁
+    const beamTop = kit.box(W - 2 * T0, 0.10, T0, bezel);
+    beamTop.position.set(0, 1.62, HZ - T0 / 2);
+    frontG.add(beamTop);
+    const beamBot = kit.box(W - 2 * T0, 0.06, T0, bezel);
+    beamBot.position.set(0, 0.06, HZ - T0 / 2);
+    frontG.add(beamBot);
+
+    // 前面板标识色条（机箱的“身份色”只做一小条点缀）
+    const badge = kit.box(W - 2 * T0 - 0.04, 0.012, 0.006, accent);
+    badge.position.set(0, 0.095, HZ - 0.004);
+    frontG.add(badge);
+
+    // 进风栅：14 条横向细缝（整块前面板的进风面积）
+    const slatGeo = new T.BoxGeometry(0.72, 0.028, 0.022);
+    const slats = new T.InstancedMesh(slatGeo, bezel, 14);
+    slats.castShadow = true;
+    slats.receiveShadow = true;
+    for (let i = 0; i < 14; i++) {
+      m4.makeTranslation(0, 0.13 + i * 0.107, HZ - 0.016);
+      slats.setMatrixAt(i, m4);
+    }
+    slats.instanceMatrix.needsUpdate = true;
+    frontG.add(slats);
+
+    // 栅格后面的防尘网
+    const frontMesh = kit.box(0.74, 1.46, 0.006, mesh);
+    frontMesh.position.set(0, 0.83, HZ - 0.045);
+    frontG.add(frontMesh);
+
+    // 前置 I/O：电源键 + 2 个 USB + 2 颗指示灯
+    const power = kit.cyl(0.022, 0.022, 0.010, 16, kit.mat('plasticMid', { color: 0xc8ccd2 }));
+    power.rotation.x = Math.PI / 2;
+    power.position.set(0.30, 1.62, HZ - 0.007);
+    frontG.add(power);
+    for (const x of [0.14, 0.19]) {
+      const usb = kit.box(0.032, 0.012, 0.010, mesh);
+      usb.position.set(x, 1.62, HZ - 0.007);
+      frontG.add(usb);
+    }
+    const ledMats = [kit.glow(0x7fe0a8, 1.4), kit.glow(0x8fc4ff, 1.2)];
+    for (let i = 0; i < 2; i++) {
+      const led = kit.sphere(0.005, 8, ledMats[i]);
+      led.position.set(-0.30 + i * 0.03, 1.62, HZ - 0.006);
+      frontG.add(led);
+    }
+
+    /* =====================================================================
+     * 4. 风扇（前部 3 个进风、后部 1 个出风）—— 风道的动力
+     *    扇叶角度 = 转速 × elapsed，不做累加，保证任意时刻可重现
+     * ===================================================================*/
     const makeFan = (size) => {
-      const g = new THREE.Group();
-      const holder = new THREE.Group();
-      holder.rotation.x = Math.PI / 2;    // 轴线朝 z：前面进风、后面排风
-      g.add(holder);
-      const frameMat = kit.mat('plasticDark', { roughness: 0.75, metalness: 0.03 });
-      const bar = 0.052;
-      for (const [w, d, px, pz] of [[size, bar, 0, size / 2 - bar / 2], [size, bar, 0, -size / 2 + bar / 2], [bar, size - bar * 2, size / 2 - bar / 2, 0], [bar, size - bar * 2, -size / 2 + bar / 2, 0]]) {
-        const b = kit.box(w, 0.10, d, frameMat);
-        b.position.set(px, 0, pz);
-        holder.add(b);
+      const holder = new T.Group();
+      const half = (size - 0.03) / 2;
+
+      // 外框四条边
+      const frameSpec = [
+        [size, 0.03, 0.02, 0, half],
+        [size, 0.03, 0.02, 0, -half],
+        [0.03, size - 0.06, 0.02, -half, 0],
+        [0.03, size - 0.06, 0.02, half, 0],
+      ];
+      for (const [w, h, d, x, y] of frameSpec) {
+        const edge = kit.box(w, h, d, dark);
+        edge.position.set(x, y, 0);
+        holder.add(edge);
       }
-      const padMat = kit.mats.rubber;
-      for (const [px, pz] of [[size / 2 - 0.028, size / 2 - 0.028], [size / 2 - 0.028, -size / 2 + 0.028], [-size / 2 + 0.028, size / 2 - 0.028], [-size / 2 + 0.028, -size / 2 + 0.028]]) {
-        const pad = kit.cyl(0.026, 0.026, 0.020, 8, padMat);
-        pad.position.set(px, 0, pz);
-        holder.add(pad);
+
+      // 四角橡胶减震垫（风扇振动会变成噪声，全靠这四个垫子隔开）
+      for (const sx of [-1, 1]) {
+        for (const sy of [-1, 1]) {
+          const pad = kit.cyl(0.016, 0.016, 0.024, 10, rubber);
+          pad.rotation.x = Math.PI / 2;
+          pad.position.set(sx * half, sy * half, 0);
+          holder.add(pad);
+        }
       }
-      const hub = kit.cyl(0.072, 0.072, 0.070, 16, frameMat);
+
+      // 轮毂 + 7 片扇叶（扇叶绕局部 Z 轴转，即风扇轴向 = Z）
+      const hub = kit.cyl(0.045, 0.045, 0.022, 16, dark);
       holder.add(hub);
-      const cap = kit.cyl(0.038, 0.038, 0.012, 12, kit.mats.metal);
-      cap.position.y = 0.040;
-      holder.add(cap);
-      const blades = new THREE.Group();
-      holder.add(blades);
-      const bladeMat = kit.mat('plastic', { roughness: 0.68, metalness: 0.03, color: 0x9aa0a6 });
+      const blades = new T.Group();
       for (let i = 0; i < 7; i++) {
-        const a = (i / 7) * Math.PI * 2;
-        const b = kit.box(0.245, 0.010, 0.110, bladeMat);
-        b.position.set(Math.cos(a) * 0.200, 0.010, Math.sin(a) * 0.200);
-        b.rotation.y = -a;
-        b.rotation.z = 0.44;
-        blades.add(b);
-        const arm = kit.box(0.100, 0.014, 0.048, frameMat);
-        arm.position.set(Math.cos(a) * 0.110, 0.008, Math.sin(a) * 0.110);
-        arm.rotation.y = -a;
+        // 叶片：径向 0.145（从轮毂伸出去）、切向 0.085（弦长）、轴向只有 0.006
+        // 绕径向轴（局部 X）倾 0.42 rad 就是攻角——叶片把旋转搅成轴向气流
+        const b = kit.box(0.145, 0.085, 0.006, blade);
+        b.position.set(0.10, 0.007, 0);
+        b.rotation.x = 0.42;
+        const arm = new T.Group();
+        arm.rotation.z = (i / 7) * Math.PI * 2;
+        arm.add(b);
         blades.add(arm);
       }
-      return { g, blades };
+      holder.add(blades);
+      return { holder, blades };
     };
 
-    // 前面两个（进气）：注意它们必须躲开硬盘架，否则会互相插进去
-    const frontFansG = new THREE.Group();
-    group.add(frontFansG);
-    rig(frontFansG, 0, 0, -0.10);
-    for (const fy of [-0.30, 0.30]) {
-      const f = makeFan(0.62);
-      f.g.position.set(0, fy, -0.80);
-      frontFansG.add(f.g);
-      fans.push({ blades: f.blades, speed: 2.6, dir: 1 });
-    }
-    // 后面一个（排气）
-    const rearFanG = new THREE.Group();
-    group.add(rearFanG);
-    rig(rearFanG, 0.22, 0.05, 0);
-    {
-      const f = makeFan(0.62);
-      f.g.position.set(0.10, 0.30, 0.74);
-      rearFanG.add(f.g);
-      fans.push({ blades: f.blades, speed: 2.9, dir: -1 });
+    // 前部 3 个进风扇（装在前面板后面，轴向 = Z，往箱内吸风）
+    const frontFanG = new T.Group();
+    const frontBlades = [];
+    for (let i = 0; i < 3; i++) {
+      const f = makeFan(0.43);
+      f.holder.position.set(0, 0.32 + i * 0.48, 0.805);
+      frontFanG.add(f.holder);
+      frontBlades.push(f.blades);
     }
 
-    /* ============================================================
-       10. 风道粒子
-       两条路线：① 前面板进 → 掠过元件 → 顶部/后部出；
-                ② 箱底进 → 电源自己吸 → 一起往上排。
-       颜色由冷（青灰）渐变到暖（灰赭），一眼看出空气"被加热了"。
-       ============================================================ */
-    const ROUTES = [
-      // ① 前进风 → 上/后出风
-      [[-0.72, -1.02], [-0.62, -0.82], [-0.35, -0.55], [-0.05, -0.05], [0.30, 0.35], [0.72, 0.60], [1.00, 0.72]],
-      // ② 底部进风 → 经过电源 → 上升排出
-      [[-1.00, -0.55], [-0.90, -0.42], [-0.62, -0.20], [-0.20, 0.15], [0.25, 0.45], [0.72, 0.62], [1.00, 0.72]],
+    /* =====================================================================
+     * 5. 后部面板：I/O、PCIe、电源三个开口（拆解时整体后移）
+     * ===================================================================*/
+    const backG = new T.Group();
+    const backZ = -(HZ - T0 / 2); // -0.845，板厚 0.03 → Z∈[-0.86,-0.83]
+
+    // 边框：上、下、左、右 + 中横梁 + I/O 与风扇之间的竖梁
+    const backFrame = [
+      [W - 2 * T0, 0.08, T0, 0, 1.63, backZ],
+      [W - 2 * T0, 0.06, T0, 0, 0.06, backZ],
+      [0.055, H - 2 * T0, T0, -0.3425, 0.85, backZ],
+      [0.045, H - 2 * T0, T0, 0.3475, 0.85, backZ],
+      [W - 2 * T0, 0.07, T0, 0, 0.985, backZ],
+      [0.06, 0.57, T0, -0.135, 1.305, backZ],
     ];
-    const COL_COLD = new THREE.Color(0xa8bcc8);
-    const COL_HOT = new THREE.Color(0xc99a74);
-    const _c = new THREE.Color();
-    const air = [];
-    const rng = kit.rng(20261024);
-    for (let i = 0; i < 20; i++) {
-      const lane = i < 14 ? 0 : 1;
-      const x = lane === 0 ? [-0.20, -0.06, 0.10, 0.28][i % 4] : [0.16, 0.30][i % 2];
-      const m = kit.glow(0xa8bcc8, 1.2).clone();
-      const d = new THREE.Mesh(new THREE.SphereGeometry(0.017, 8, 6), m);
-      d.userData.route = ROUTES[lane];
-      d.userData.x = x + (rng() - 0.5) * 0.05;
-      d.userData.t = (i * 0.137) % 1;
-      d.userData.k = 0.75 + (i % 4) * 0.12;
-      d.userData.mat = m;
-      group.add(d);
-      air.push(d);
+    for (const [w, h, d, x, y, z] of backFrame) {
+      const p = kit.box(w, h, d, steel);
+      p.position.set(x, y, z);
+      backG.add(p);
     }
 
-    const _p = new THREE.Vector3();
-    const _a = new THREE.Vector3();
-    const _b = new THREE.Vector3();
-    function sampleRoute(route, x, u) {
-      const s = kit.clamp01(u) * (route.length - 1);
-      const i = Math.min(Math.floor(s), route.length - 2);
-      const f = s - i;
-      _a.set(x, route[i][0], route[i][1]);
-      _b.set(x, route[i + 1][0], route[i + 1][1]);
-      return _p.copy(_a).lerp(_b, f);
+    // I/O 挡板：一块冲压钢片，主板的所有外设接口从这里伸出去
+    const ioShield = kit.box(0.15, 0.57, 0.008, kit.mat('metal', { roughness: 0.38, metalness: 0.70, color: 0x59616a }));
+    ioShield.position.set(-0.24, 1.305, backZ);
+    backG.add(ioShield);
+
+    // 接口凸包（2 列 × 3 行：USB / 网口 / 音频都从这个方向出去）
+    const portGeo = new T.BoxGeometry(0.045, 0.030, 0.014);
+    const ports = new T.InstancedMesh(portGeo, kit.mat('metal', { roughness: 0.5, metalness: 0.5, color: 0x3f464e }), 6);
+    let pi = 0;
+    for (const py of [1.10, 1.24, 1.38]) {
+      for (const px of [-0.275, -0.205]) {
+        m4.makeTranslation(px, py, -0.852);
+        ports.setMatrixAt(pi++, m4);
+      }
+    }
+    ports.instanceMatrix.needsUpdate = true;
+    backG.add(ports);
+
+    // 扩展槽区：7 条 PCIe 挡板（一条对应一个槽位，显卡/网卡就从这里露出）
+    const pciePlate = kit.box(W - 2 * T0, 0.60, 0.006, mesh);
+    pciePlate.position.set(0, 0.65, -0.838);
+    backG.add(pciePlate);
+    const slotGeo = new T.BoxGeometry(0.44, 0.066, 0.010);
+    const slots = new T.InstancedMesh(slotGeo, kit.mat('metal', { roughness: 0.5, metalness: 0.5, color: 0x6b7278 }), 7);
+    slots.castShadow = true;
+    for (let i = 0; i < 7; i++) {
+      m4.makeTranslation(-0.09, 0.398 + i * 0.076, -0.850);
+      slots.setMatrixAt(i, m4);
+    }
+    slots.instanceMatrix.needsUpdate = true;
+    backG.add(slots);
+    for (let i = 0; i < 7; i++) {
+      const s = kit.box(0.012, 0.012, 0.008, screw);
+      s.position.set(0.12, 0.398 + i * 0.076, -0.850);
+      backG.add(s);
     }
 
-    /* ============================================================
-       整体缩放 + 原点归位
-       1) 等比收到 SCALE：机箱天生比别人大一圈，不收的话在环上会变成
-          画面的主角，压掉"八件等重"的节奏。只整体等比收，不改内部比例。
-       2) 平移到包围盒中心（契约 §1.5）：侧板、前面板都往外探，重心偏一点。
-       两件事都交给一个内层容器做，外层 group 的 scale 保持 1 ——
-       免得和 main.js 的出场缩放动画（p.anim.scale）打架。
-       数学上：内层 scale=S、position=-S·c，则任意点 p → S(p-c)，缩放后仍居中。
-       ============================================================ */
-    {
-      const c = new THREE.Box3().setFromObject(group).getCenter(new THREE.Vector3());
-      const inner = new THREE.Group();
-      inner.scale.setScalar(SCALE);
-      if (c.lengthSq() > 1e-10) inner.position.copy(c).multiplyScalar(-SCALE);
-      for (const child of [...group.children]) inner.add(child);
-      group.add(inner);
+    // 电源区出风：网孔 + 5 条格栅（电源的热风也从后面走）
+    const psuMesh = kit.box(0.62, 0.24, 0.006, mesh);
+    psuMesh.position.set(0, 0.22, -0.838);
+    backG.add(psuMesh);
+    const grilleGeo = new T.BoxGeometry(0.60, 0.014, 0.008);
+    const grille = new T.InstancedMesh(grilleGeo, mesh, 5);
+    for (let i = 0; i < 5; i++) {
+      m4.makeTranslation(0, 0.13 + i * 0.045, -0.848);
+      grille.setMatrixAt(i, m4);
+    }
+    grille.instanceMatrix.needsUpdate = true;
+    backG.add(grille);
+
+    // 后置出风扇（轴向 = Z，把箱内热风抽出去）
+    const rearFan = makeFan(0.43);
+    rearFan.holder.position.set(0.11, 1.30, -0.805);
+    backG.add(rearFan.holder);
+    const rearDisc = kit.cyl(0.215, 0.215, 0.006, 32, mesh);
+    rearDisc.rotation.x = Math.PI / 2;
+    rearDisc.position.set(0.11, 1.30, -0.842);
+    backG.add(rearDisc);
+    const barGeo = new T.BoxGeometry(0.44, 0.008, 0.006);
+    const bars = new T.InstancedMesh(barGeo, kit.mat('metal', { roughness: 0.45, metalness: 0.60, color: 0x767d85 }), 6);
+    for (let i = 0; i < 6; i++) {
+      m4.makeTranslation(0.11, 1.30 + (i - 2.5) * 0.07, -0.852);
+      bars.setMatrixAt(i, m4);
+    }
+    bars.instanceMatrix.needsUpdate = true;
+    backG.add(bars);
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        const s = kit.cyl(0.008, 0.008, 0.006, 8, screw);
+        s.rotation.x = Math.PI / 2;
+        s.position.set(0.11 + sx * 0.19, 1.30 + sy * 0.19, -0.852);
+        backG.add(s);
+      }
     }
 
-    /* ============================================================
-       拆解 / 动画
-       ============================================================ */
+    /* =====================================================================
+     * 6. 封闭侧板（-X）：拆解时向 -X 抽出；开口侧（+X）不放任何板
+     * ===================================================================*/
+    const sideG = new T.Group();
+    const sidePanel = kit.box(T0, H - 2 * T0, D - 2 * T0, sheet);
+    sidePanel.position.set(-(HX - T0 / 2), H / 2, 0);
+    sideG.add(sidePanel);
+    // 侧板压筋（冲压加强，也方便手指抠住推拉）
+    const groove = kit.box(0.004, H - 2 * T0 - 0.12, 0.02, steel);
+    groove.position.set(-(HX - T0) - 0.002, H / 2, 0.30);
+    sideG.add(groove);
+    // 侧板后端两颗手拧螺丝
+    for (const y of [0.35, 1.35]) {
+      const s = kit.cyl(0.015, 0.015, 0.010, 10, screw);
+      s.rotation.z = Math.PI / 2;
+      s.position.set(-(HX - T0 / 2) - 0.006, y, -0.78);
+      sideG.add(s);
+    }
+
+    /* =====================================================================
+     * 7. 主板托盘 + 理线位（-X 侧那块竖板；主板贴它的 +X 面）
+     *    中间特意留出 CPU 背板开窗（换散热器要拆背板）
+     * ===================================================================*/
+    const trayG = new T.Group();
+    const trayParts = [
+      [0.02, 0.56, 1.56, TRAY_X, 0.70, -0.05], // 下半板 Y 0.42~0.98
+      [0.02, 0.32, 0.38, TRAY_X, 1.14, -0.64], // 开窗后半段
+      [0.02, 0.32, 0.76, TRAY_X, 1.14, 0.35],  // 开窗前半段
+      [0.02, 0.16, 1.56, TRAY_X, 1.38, -0.05], // 上沿
+    ];
+    for (const [w, h, d, x, y, z] of trayParts) {
+      const p = kit.box(w, h, d, sheet);
+      p.position.set(x, y, z);
+      trayG.add(p);
+    }
+
+    // 六颗铜柱：把主板架离钢板，同时把主板地、机箱地连成同一个地
+    const standoffs = [
+      [0.50, -0.70], [0.50, -0.02], [0.50, 0.60],
+      [1.34, -0.70], [1.34, 0.60], [0.92, 0.60],
+    ];
+    for (const [y, z] of standoffs) {
+      const st = kit.cyl(0.018, 0.018, 0.022, 10, kit.mats.copper);
+      st.rotation.z = Math.PI / 2;
+      st.position.set(TRAY_X + 0.021, y, z);
+      trayG.add(st);
+    }
+
+    // 三个理线孔（橡胶护圈）：线从前/上走，尽量别横在风道上
+    for (const [y, z] of [[0.56, 0.60], [1.02, 0.60], [1.24, 0.20]]) {
+      const hole = kit.box(0.008, 0.10, 0.07, mesh);
+      hole.position.set(TRAY_X - 0.001, y, z);
+      trayG.add(hole);
+      const ring = kit.cyl(0.055, 0.055, 0.016, 16, rubber, true);
+      ring.rotation.z = Math.PI / 2;
+      ring.position.set(TRAY_X - 0.002, y, z);
+      trayG.add(ring);
+    }
+
+    // 背线槽 + 三根理线带
+    const channel = kit.box(0.04, 1.30, 0.06, dark);
+    channel.position.set(-0.35, 0.80, 0.66);
+    trayG.add(channel);
+    for (const y of [0.45, 0.85, 1.25]) {
+      const strap = kit.box(0.05, 0.02, 0.02, kit.mat('rubber', { color: 0x33383e }));
+      strap.position.set(-0.35, y, 0.66);
+      trayG.add(strap);
+    }
+
+    /* =====================================================================
+     * 8. 电源仓（底部靠后）+ 硬盘架（底部前方）
+     * ===================================================================*/
+    const shroudG = new T.Group();
+    const shroudTop = kit.box(0.72, 0.02, 0.62, dark);
+    shroudTop.position.set(-0.01, 0.345, -0.51); // 顶板：把电源和上方显卡区隔开
+    shroudG.add(shroudTop);
+    const shroudFace = kit.box(0.72, 0.31, 0.02, dark);
+    shroudFace.position.set(-0.01, 0.19, -0.20); // 前立面
+    shroudG.add(shroudFace);
+    for (const z of [-0.72, -0.36]) {
+      const rail = kit.box(0.56, 0.012, 0.03, steel); // 电源滑轨
+      rail.position.set(0, 0.052, z);
+      shroudG.add(rail);
+      const pad = kit.box(0.56, 0.010, 0.05, rubber); // 仓底减震垫
+      pad.position.set(0, 0.036, z);
+      shroudG.add(pad);
+    }
+
+    const cageG = new T.Group();
+    const cageW = 0.52;
+    const cageD = 0.62;
+    const cageZ = 0.36;
+    const cageBase = kit.box(cageW, 0.010, cageD, steel);
+    cageBase.position.set(0, 0.040, cageZ);
+    cageG.add(cageBase);
+    for (const sx of [-1, 1]) {
+      const rail = kit.box(0.02, 0.075, cageD, steel); // 两侧导轨：3.5" 硬盘直接滑进去
+      rail.position.set(sx * (cageW / 2 - 0.01), 0.075, cageZ);
+      cageG.add(rail);
+    }
+    const cageFace = kit.box(cageW, 0.09, 0.02, dark);
+    cageFace.position.set(0, 0.075, cageZ - cageD / 2);
+    cageG.add(cageFace);
+    for (const sx of [-1, 1]) {
+      const pad = kit.box(0.02, 0.02, 0.10, rubber); // 硬盘减震垫
+      pad.position.set(sx * (cageW / 2 - 0.01), 0.048, cageZ);
+      cageG.add(pad);
+    }
+
+    /* =====================================================================
+     * 9. 风道粒子 —— 机箱唯一的“原理”，必须一眼看懂
+     *    路线用 [y,z] 航点描述，x 由车道给出；粒子全程待在箱体内部（不破坏包围盒）
+     * ===================================================================*/
+    const ROUTES = [
+      // A：前面板下沿进 → 经过主板/散热器 → 从顶部出风
+      [[0.26, 0.80], [0.52, 0.36], [0.88, -0.06], [1.24, -0.34], [1.50, -0.18], [1.62, 0.10]],
+      // B：底部前方进 → 经过显卡区 → 从后部出风
+      [[0.12, 0.72], [0.20, 0.22], [0.34, -0.34], [0.58, -0.66], [0.92, -0.80], [1.18, -0.78]],
+    ];
+    const LANES = [[-0.22, -0.08, 0.06, 0.20], [0.14, 0.30]];
+
+    // 在折线上按 u∈[0,1) 取点（按时间推进，不依赖帧率）
+    const sampleRoute = (route, u) => {
+      const segs = route.length - 1;
+      const f = Math.min(0.9999, Math.max(0, u)) * segs;
+      const i = Math.floor(f);
+      const k = f - i;
+      const a = route[i];
+      const b = route[Math.min(segs, i + 1)];
+      return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+    };
+
+    const particles = [];
+    const AIR_N = 18;
+    for (let i = 0; i < AIR_N; i++) {
+      const r = i % 2;
+      const lanes = LANES[r];
+      const x = lanes[(i >> 1) % lanes.length];
+      const mat = kit.glow(i < 9 ? 0xa8bcc8 : 0xc4d3dc, 1.15).clone();
+      mat.transparent = true;
+      mat.opacity = 0;
+      mat.depthWrite = false;
+      const p = kit.sphere(0.013, 8, mat);
+      p.userData = { route: r, x, ph: (i * 0.137) % 1, sp: 0.070 + (i % 3) * 0.008 };
+      const s = sampleRoute(ROUTES[r], p.userData.ph);
+      p.position.set(x, s[0], s[1]);
+      group.add(p);
+      particles.push(p);
+    }
+
+    /* =====================================================================
+     * 10. 拆解：各功能组登记基准位移，setExplode(t) 直接由 t 算出位置
+     * ===================================================================*/
+    const rig = (g, x, y, z) => {
+      g.userData.base = { x, y, z };
+      g.position.set(0, 0, 0); // t=0 时归零；位移只由 setExplode(t) 算出
+      group.add(g);
+      return g;
+    };
+    rig(topG, 0, 0.30, 0.03);      // 顶盖抬起
+    rig(frontG, 0, 0, 0.26);       // 前面板前移
+    rig(frontFanG, 0, 0.02, 0.12); // 前部进风扇跟着面板让开
+    rig(backG, 0, 0, -0.24);       // 后部面板后移
+    rig(sideG, -0.20, 0, 0);       // 封闭侧板向 -X 抽出
+    rig(shroudG, 0, 0.12, 0);      // 电源仓罩抬起
+    rig(trayG, 0.10, 0, 0);        // 主板托盘从开口侧滑出
+    rig(cageG, 0, 0.06, 0.06);     // 硬盘架抬起
+    const rigged = [topG, frontG, frontFanG, backG, sideG, shroudG, trayG, cageG];
+
     return {
       group,
-      legend: [
-        { text: '前面板进风', desc: '冷空气从前面和下面被吸进来' },
-        { text: '主板托盘', desc: '元件都固定在它上面，板子背面专门用来藏线' },
-        { text: '顶部与后部出风', desc: '空气被加热后变轻，顺着风道自己往上排' },
-        { text: '硬盘架与电源仓', desc: '把最占地方的部件压到箱底，不挡风道' },
-      ],
 
-      /** t: 0 = 合拢，1 = 完全拆解。纯函数，可来回擦洗 */
       setExplode(t) {
         const e = kit.easeInOut(t);
-        for (const r of rigs) {
-          const b = r.g.userData.base, d = r.d;
-          r.g.position.set(b.x + d.x * e, b.y + d.y * e, b.z + d.z * e);
+        for (const g of rigged) {
+          const b = g.userData.base;
+          g.position.set(b.x * e, b.y * e, b.z * e);
         }
       },
 
-      /** 持续动画：三个风扇转 + 风道粒子流动 */
       update(elapsed, dt, emphasis = 0) {
-        // 角度直接由 elapsed 算出（不累加），保证同一时刻永远同一帧
-        for (const f of fans) f.blades.rotation.y = elapsed * f.speed * f.dir;
+        const boost = 1 + 1.5 * emphasis; // 被选中时风扇转快、气流也快
 
-        const spd = 0.10 + emphasis * 0.15;
-        for (const d of air) {
-          d.userData.t = (d.userData.t + dt * spd * d.userData.k) % 1;
-          const u = d.userData.t;
-          d.position.copy(sampleRoute(d.userData.route, d.userData.x, u));
-          // 冷 → 暖：空气一边走一边被元件加热
-          _c.copy(COL_COLD).lerp(COL_HOT, Math.min(u * 1.6, 1));
-          d.userData.mat.color.copy(_c);
-          d.userData.mat.emissive.copy(_c);
-          d.userData.mat.emissiveIntensity = 0.9 + emphasis * 0.8;
-          // 进出机箱两端淡出
-          const edge = Math.min(u, 1 - u);
-          d.visible = edge > 0.05;
+        // 风扇：角度 = 转速 × elapsed（绝不累加，保证与时间轴一致、可反复回放）
+        for (let i = 0; i < frontBlades.length; i++) {
+          frontBlades[i].rotation.z = elapsed * (4.6 + i * 0.15) * boost;
+        }
+        rearFan.blades.rotation.z = -elapsed * 5.1 * boost;
+
+        // 风道：冷空气被吸进来 → 经过热源变暖 → 排出（用色温 + 淡出表达）
+        for (const p of particles) {
+          const d = p.userData;
+          const u = (elapsed * d.sp * boost + d.ph) % 1;
+          const s = sampleRoute(ROUTES[d.route], u);
+          p.position.set(d.x, s[0], s[1]);
+          const m = p.material;
+          m.color.lerpColors(AIR_COLD, AIR_HOT, Math.min(1, u * 1.25));
+          m.emissive.copy(m.color);
+          m.opacity = Math.min(1, u / 0.08) * Math.min(1, (1 - u) / 0.18);
+          m.emissiveIntensity = 1.15 * m.opacity;
         }
       },
+
+      legend: [
+        { text: '外框与立柱', desc: '一副钢笼子：所有零件的相对位置都由它决定，装机就是“往这个笼子里塞”。' },
+        { text: '前面板进风', desc: '冷空气只从前面板（和箱底）进来，栅格后面是一整张防尘网。' },
+        { text: '顶盖与后部出风', desc: '热空气更轻，从上面和后面排走；后置风扇负责把箱内热气抽出去。' },
+        { text: '主板托盘与铜柱', desc: '主板用六颗铜柱架离钢板：既留出背线空间，也让主板地和机箱地连成同一个地。' },
+        { text: '风道', desc: '前面进、后面出，一路带走 CPU 和显卡的热量——机箱本身不干活，它只负责让风走对路。' },
+      ],
     };
   },
 };

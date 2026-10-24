@@ -189,24 +189,44 @@ export const copy = {
 
 ## 5. 交互模型（lead 实现，所有人需要知道）
 
-- 首屏：8 个元件悬浮在"虚空"中，环绕排布，一次性全部可见。
+**装配态 = 一台立式中塔机箱。** 八个元件不是各摆各的，而是按真实装机位置
+装进一只机箱里；位置/朝向/比例表在 `src/data/layout.js`（那是唯一的真相）。
+
+- **开场（装配动画）**：镜头从远景推进 → 机箱先落位 → 其余七件**从打开的
+  侧板（+X）外依次飞进来装好**，按真实装机顺序：主板 → 电源 → 处理器 →
+  散热器 → 内存 → 硬盘 → 显卡（每件 0.95 s，间隔约 0.22 s）。
 - **点击某个元件**（或左侧列表项）：
-  1. 相机沿平滑曲线飞到该元件的 `focus` 机位（掠过一个弧线，不是直线拉近）；
-  2. 该元件 `setExplode` 从 0 → 1（约 1.1 秒，`easeInOut`）；
-  3. 其他 7 个淡出到低不透明度并略微缩小；
-  4. 右侧面板滑入，显示 name/en/tagline/principle/specs/legend；
-  5. 界面强调色切换成该元件的 `hue`。
-- **复位**：点击空白处或"返回"按钮 → 回到全景机位，所有元件 `setExplode(0)`。
+  1. 该元件沿 **+X**（打开侧板那一侧）抽出机箱约 0.5~0.8 个单位，看起来像
+     "从机箱里拿出来给你看"；
+  2. 相机沿平滑弧线飞到它抽出来之后的机位（`focus` 偏移 × 布局 scale × `K_FOCUS`）；
+  3. 该元件 `setExplode` 从 0 → 1（约 1.1 秒，`easeInOut`）；
+  4. 其他 7 件略微缩小（0.84×）把注意力让出来；
+  5. 右侧面板滑入，显示 name/en/tagline/principle/specs/legend；
+  6. 界面强调色 + **背景穹顶的色温**一起切换成该元件的 `hue`。
+- **复位**：点击空白处、`Esc` 或"返回"按钮 → 元件装回机箱、`setExplode(0)`、
+  镜头退回全景机位。
 - **上一个/下一个**：键盘 `←` `→`，以及面板底部按钮。
 - 每个元件在"被选中"时 `update` 里的持续动画才加速；未选中时保持极慢的待机动画。
-- `prefers-reduced-motion` 时：不做相机飞行，直接切机位。
+- `prefers-reduced-motion` 时：不做相机飞行、不做装配动画，直接切机位。
+
+### 5.1 装配布局怎么验收（不用浏览器）
+
+```powershell
+node tools/place.mjs     # 纯 Node：装得进机箱吗 / 有没有穿模 / 机位留白够不够
+```
+
+它会量出每件 t=0 的世界包围盒，检查是否落在机箱内腔
+（X∈[-0.37,0.37]、Y∈[0.03,1.67]、Z∈[-0.83,0.83]）里，算两两包围盒重叠比，
+并算出「拆解态半径 ÷ 该机位距离与 fov 下的可见半径」——这个占比必须 ≤80%，
+否则元件会被画面切角（实测显卡最贪，`K_FOCUS` 就是照它定的）。
+**改了 `layout.js` 或 `K_FOCUS` 之后必须重跑一遍。**
 
 ---
 
 ## 6. 本地怎么跑
 
 ```powershell
-cd "D:\桌面\AI项目\computer-anatomy"
+cd computer-anatomy
 npm run dev          # esbuild 监听打包 → 起本地服务 → 浏览器打开
 npm run build        # 产出 dist\电脑八大件.html（单文件，双击即开）
 ```
@@ -218,7 +238,7 @@ npm run build        # 产出 dist\电脑八大件.html（单文件，双击即�
 
 ## 7. 自查清单（提交前必须自己过一遍）
 
-- [ ] `node --check src/parts/xxx.js` 语法通过（ESM 用 `node --input-type=module --check`）
+- [ ] `node --check src/parts/xxx.js` 语法通过（**不要**用 `node --input-type=module --check`：本仓库 `package.json` 有 `"type":"module"`，Node 24 下该组合必报 `ERR_INPUT_TYPE_NOT_ALLOWED`）
 - [ ] `setExplode(0)` 与 `setExplode(1)` 都不穿模（部件不要互相插进去）
 - [ ] 用 `?part=xxx&t=1` 看过拆解态，用 `?part=xxx&t=0` 看过合拢态
 - [ ] 没有用到契约 §3 以外的材质；没有自己 new MeshStandardMaterial

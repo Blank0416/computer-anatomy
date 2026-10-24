@@ -11,6 +11,16 @@
      node tools/shoot.mjs --url "index.html?part=cpu&t=1" --out shots/cpu.png
      node tools/shoot.mjs --out shots/x.png --eval "window.__anatomy.parts.length"
      node tools/shoot.mjs --out shots/x.png --w 1400 --h 900 --wait 4000
+     node tools/shoot.mjs --out shots/x.png --until "!window.__anatomy.rig.isFlying"
+     node tools/shoot.mjs --edge "D:\\Edge\\msedge.exe" --cpu --out shots/x.png
+
+   ⚠️ 默认走真 GPU（--headless=new，不加 --disable-gpu）。
+   不要顺手加 --cpu：它会切到 SwiftShader 纯 CPU 软件渲染，一轮截图能把整机
+   CPU 打满几十秒 —— 实测踩过，正在用电脑的人当场投诉。只有在 GPU 通道坏了、
+   且机器确实空闲时才用它兜底。
+
+   ⚠️ 等页面状态，不要等秒数。软件渲染下帧率极低且主循环钳制了 dt，
+   "等 6 秒"只推进零点几秒动画，量到的是镜头半路的中间态。
    ============================================================ */
 
 import { spawn } from 'node:child_process';
@@ -35,7 +45,11 @@ const W = +flag('w', 1600);
 const H = +flag('h', 1000);
 const WAIT = +flag('wait', 4500);
 const EVAL = flag('eval', '');
-const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
+/* Edge 路径：--edge 参数 > EDGE_PATH 环境变量 > 常见安装位置 */
+const EDGE = flag('edge', process.env.EDGE_PATH
+  || 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe');
+/* 默认真 GPU；--cpu 才退化为软件渲染（见文件头警告） */
+const SOFT = argv.includes('--cpu');
 
 /* ---------- 启动 Edge ---------- */
 const PORT = 9330 + (process.pid % 200);
@@ -46,7 +60,7 @@ const child = spawn(EDGE, [
   '--remote-debugging-port=' + PORT,
   '--user-data-dir=' + PROFILE,
   '--no-first-run', '--no-default-browser-check',
-  '--disable-gpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader',
+  ...(SOFT ? ['--disable-gpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader'] : []),
   '--hide-scrollbars', '--mute-audio',
   '--force-device-scale-factor=1',
   `--window-size=${W},${H}`,

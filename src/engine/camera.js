@@ -8,7 +8,10 @@ import * as THREE from 'three';
 
 const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const damp = (c, t, l, dt) => t + (c - t) * Math.exp(-l * Math.max(dt, 0));
-const V = (a) => new THREE.Vector3(a[0], a[1], a[2]);
+/* 机位坐标既接受普通数组也接受 Vector3。
+   （只写 a[0]/a[1]/a[2] 的话，Vector3 会取到 undefined，
+   而 Vector3 构造函数把 undefined 吞成 0 —— 镜头会静默飞到原点。） */
+const V = (a) => (a && a.isVector3 ? a.clone() : new THREE.Vector3(a[0], a[1], a[2]));
 
 export function createCameraRig(camera) {
   const look = new THREE.Vector3(0, 0, 0);       // 当前注视点
@@ -82,10 +85,13 @@ export function createCameraRig(camera) {
   /** 鼠标视差，输入 -1..1 */
   function setParallax(x, y) { parallax.set(x, y); }
 
-  /** 在机位之上叠加自由环绕（用户拖动）。dx/dy 是像素增量 */
+  /** 在机位之上叠加自由环绕（用户拖动）。dx/dy 是像素增量
+      约定是"抓住物体拖"：向右拖，物体跟着往右转（镜头往左绕）；
+      向下拖，物体正面跟着往下压（镜头因此升到上方俯视）。
+      pitch > 0 会把镜头压到注视点下方，所以向下拖要取负号。 */
   function addOrbit(dx, dy) {
     yawT -= dx * 0.0045;
-    pitchT = Math.max(-0.62, Math.min(0.72, pitchT + dy * 0.0032));
+    pitchT = Math.max(-0.62, Math.min(0.72, pitchT - dy * 0.0032));
   }
 
   /** 缩放系数（用户滚轮），1 = 机位原距离 */

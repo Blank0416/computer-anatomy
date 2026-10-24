@@ -1,7 +1,9 @@
 /* ============================================================
    main.js — 装配与交互
-   八大件环成一圈 → 点一个 → 镜头沿弧线飞过去 → 它拆开 → 面板滑入。
-   CONTRACT.md §5 是这份实现的行为说明。
+   装配态 = 一台立式中塔机箱：机箱先到位，八个元件从打开的侧板外
+   依次飞进来装好；点某一个 → 它沿 +X（侧板那侧）抽出机箱并拆开，
+   镜头跟着飞到它跟前；Esc 或点空白 → 它装回去，镜头退回全景。
+   位置/朝向/比例表在 src/data/layout.js，CONTRACT.md §5 是行为说明。
    ============================================================ */
 
 import * as THREE from 'three';
@@ -11,6 +13,7 @@ import { createStage } from './engine/stage.js';
 import { createKit } from './engine/kit.js';
 import { createCameraRig } from './engine/camera.js';
 import { copy } from './data/copy.js';
+import { layout } from './data/layout.js';
 
 import cpu from './parts/cpu.js';
 import cooler from './parts/cooler.js';
@@ -21,7 +24,7 @@ import gpu from './parts/gpu.js';
 import psu from './parts/psu.js';
 import chassis from './parts/case.js';
 
-/* 环上的顺序 = 装机顺序，从处理器开始 */
+/* 列表里的顺序 = 面板上一个/下一个的顺序，从处理器开始 */
 const MODULES = [cpu, cooler, motherboard, ram, storage, gpu, psu, chassis];
 
 /* ------------------------------------------------------------
@@ -41,62 +44,115 @@ const kit = createKit();
 const rig = createCameraRig(stage.camera);
 
 /* ------------------------------------------------------------
-   1. 地面与环
+   1. 机位设计
    ------------------------------------------------------------ */
 
-const RING_R = 4.6;
-const START_ANGLE = 0.92;          // 让第一个元件正对初始机位
-const GROUND_Y = -1.15;
+/* 元件机位还要再拉远多少。元件模型是按「自己单独摆」调的机位，
+   装进机箱后整体乘了布局的 scale，拆解态会顶到画面边被切角。
+   这个系数不是拍脑袋来的：`node tools/place.mjs` 会算出每件拆解态的
+   半径在机位距离、该 fov 下占画面多少，要求 ≤80%（最坏是包围盒的
+   对角，所以留白比标称的更宽）。实测显卡最贪，1.45 时占 114%，
+   2.15 时降到 77%，其余都在 62%~77%。改机位后重跑那个脚本。 */
+const K_FOCUS = 2.15;
 
-/* 机位设计：地面在 y = GROUND_Y，八个元件坐落其上。
-   先定义在这里，下面量元件尺寸时要用全景机位。
-
-   仰角是关键：环从低角度看，横向会被压成"四团"——极值点附近的两个
-   邻居 screen-x 几乎重合，三四个元件叠在一起看不清。抬到 42° 之后，
-   前后深度差转成屏幕上的纵向差，八个元件各自分开，而且都能看到顶面
-   （主板/显卡/电源的识别全靠顶面）。 */
-const OVERVIEW = { from: [9.9, 12.8, 12.0], look: [0, -2.76, 0], fov: 30 };
-const ESTABLISH = { from: [10.6, 5.2, 12.8], look: [0, GROUND_Y + 1.25, 0], fov: 33 };
+/* 全景：从打开的侧板（+X）斜前上方看进去，整机都在画面里。
+   整机 0.80 × 1.70 × 1.72，最远的角离注视点 1.26 —— 距离 6.2、fov 32 时
+   画面半高 1.79，占 70%，留白够。 */
+const OVERVIEW = { from: [4.30, 3.30, 3.80], look: [0, 0.86, 0], fov: 32 };
+/* 开场远景：从更远处推进来，让「这是一台机器」先立住 */
+const ESTABLISH = { from: [8.40, 6.00, 7.00], look: [0, 0.95, 0], fov: 32 };
 
 const world = new THREE.Group();
 stage.scene.add(world);
 
-// 展台地面：比背景亮一档。地面和背景同色时，"环"中间那块空地
-// 看起来不是"场地"而是"洞"，八个元件像悬在虚空里。
+/* 地面：比背景亮一档，给机箱一个落脚的场地和接触阴影。
+   压在 +Y 之下 4‰，避免和机箱底板共面打架。 */
 const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(80, 80),
+  new THREE.PlaneGeometry(60, 60),
   kit.tint(0x22262d, { rough: 0.96, metal: 0 })
 );
 ground.rotation.x = -Math.PI / 2;
-ground.position.y = GROUND_Y;
+ground.position.y = -0.004;
 ground.receiveShadow = true;
 world.add(ground);
 
-// 一圈极淡的定位环，让"八个位置"这件事看得出来
-const ringLine = new THREE.Mesh(
-  new THREE.TorusGeometry(RING_R, 0.0055, 5, 200),
-  kit.glow(0x6d7783, 0.55)
+/* 背景穹顶：一整片竖直渐变，替掉原来的纯色清屏。
+   这也是「颜色有点灰」的一半解 —— 机身是深色的，背景也是深灰的话，
+   整幅画就只剩明度没有色相。穹顶顶部混一点当前元件的色相，
+   选中谁，整个空间跟着轻微偏一点色。
+
+   注意 `fog: false`：穹顶半径 60，远在雾的 far(34) 之外，
+   不关掉雾它会被整片替换成雾色，渐变就白做了。 */
+const skyCanvas = document.createElement('canvas');
+skyCanvas.width = 8;
+skyCanvas.height = 256;
+const skyTex = new THREE.CanvasTexture(skyCanvas);
+skyTex.colorSpace = THREE.SRGBColorSpace;
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(60, 32, 16),
+  new THREE.MeshBasicMaterial({
+    map: skyTex, side: THREE.BackSide, depthWrite: false, fog: false, toneMapped: false,
+  })
 );
-ringLine.rotation.x = -Math.PI / 2;
-ringLine.position.y = GROUND_Y + 0.004;
-world.add(ringLine);
+world.add(sky);
+
+const SKY_BASE = new THREE.Color(0x171a1f);
+const GROUND_BASE = new THREE.Color(0x22262d);
+const skyTmp = new THREE.Color();
+
+function paintSky(hueHex) {
+  const g = skyCanvas.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  // 顶部只混 22% 的色相，再多就变成彩色背景布了
+  skyTmp.set(hueHex).lerp(SKY_BASE, 0.78);
+  grad.addColorStop(0.0, skyTmp.getStyle());
+  grad.addColorStop(0.42, SKY_BASE.getStyle());
+  grad.addColorStop(1.0, '#0e1014');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 8, 256);
+  skyTex.needsUpdate = true;
+  // 地面也跟着沾一点色（5% 就够），否则机身和地面是两个色温
+  ground.material.color.copy(GROUND_BASE).lerp(skyTmp.set(hueHex), 0.05);
+}
+paintSky(0xc9a98a);
 
 /* ------------------------------------------------------------
-   2. 八个元件就位（各自"坐落"在地面上）
+   2. 装配顺序与延迟（这是真实装机顺序，开场就按它一件件飞进来）
    ------------------------------------------------------------ */
 
-const parts = MODULES.map((mod, i) => {
-  const a = START_ANGLE + (i / MODULES.length) * Math.PI * 2;
+const INSTALL = {
+  case: 0,          // 机箱先落位，后面的东西才有地方装
+  motherboard: 0.34,
+  psu: 0.62,
+  cpu: 0.88,
+  cooler: 1.10,
+  ram: 1.32,
+  storage: 1.54,
+  gpu: 1.76,
+};
+const ENTER_DUR = 0.95;        // 每一件飞进来要多久
+const ENTER_GAP = 2.60;        // 从多远处飞进来（世界单位）
 
-  // 半径交替内缩/外扩：环的横向投影在极值点附近会把相邻两个元件叠在一起，
-  // 让它们分处两个半径上，深度差就把它们拆开了（展台摆法）。
-  const rr = RING_R + (i % 2 === 0 ? 0.42 : -0.42);
+/* ------------------------------------------------------------
+   3. 八个元件就位
+   层级：world → mover（装配位移，走世界轴）→ wrapper（座位：位置/朝向/比例）
+              → anim（元件自身微动，走局部轴）→ built.group
+   拆开 mover 和 wrapper 是为了让「抽出去」这件事永远沿世界 +X，
+   不用去算每个元件各自被旋转过多少度。
+   ------------------------------------------------------------ */
 
-  // wrapper 决定它在环上的位置与朝向；anim 负责入场/退避，不动基准。
-  // 局部 +Z 指向环外（rotation.y = π/2 − a 的几何结果），退避时沿它往外推。
+const parts = MODULES.map((mod) => {
+  const L = mod.id === 'case' ? layout.case : layout.parts[mod.id];
+  if (!L) throw new Error(`layout.js 里缺少 ${mod.id} 的位置`);
+
+  const mover = new THREE.Group();
+  world.add(mover);
+
   const wrapper = new THREE.Group();
-  wrapper.rotation.y = Math.PI / 2 - a;
-  world.add(wrapper);
+  wrapper.position.set(L.pos[0], L.pos[1], L.pos[2]);
+  wrapper.rotation.set(L.rot[0], L.rot[1], L.rot[2], 'XYZ');
+  wrapper.scale.setScalar(L.scale);
+  mover.add(wrapper);
 
   const anim = new THREE.Group();
   wrapper.add(anim);
@@ -104,45 +160,52 @@ const parts = MODULES.map((mod, i) => {
   const built = mod.build(kit);
   anim.add(built.group);
 
-  // 量一下这个元件自己的高度，让它底面对齐地面（这样才有接触阴影，
-  // 而不是八个东西各自飘在不同高度）
-  const box = new THREE.Box3().setFromObject(built.group);
-  const halfH = Math.max(0.05, (box.max.y - box.min.y) / 2);
+  anim.userData.__part = null;   // 下面填
 
-  wrapper.position.set(
-    Math.cos(a) * rr,
-    GROUND_Y + 0.01 - box.min.y,
-    Math.sin(a) * rr
+  /* 机位：元件的 focus 是「相对元件自己原点」的坐标。
+     先按布局的 scale 缩放、再按布局的朝向旋转，就得到世界偏移。
+     抽出去之后元件整体平移，所以镜头目标 = mover 当前位置 + 这个偏移。 */
+  const quat = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(L.rot[0], L.rot[1], L.rot[2], 'XYZ')
   );
+  const offFrom = new THREE.Vector3(...mod.focus.from)
+    .multiplyScalar(L.scale * K_FOCUS)
+    .applyQuaternion(quat);
+  const offLook = new THREE.Vector3(...(mod.focus.look ?? [0, 0, 0]))
+    .multiplyScalar(L.scale)
+    .applyQuaternion(quat);
 
-  // 地面上的标识点：hue 只在这里（和选中时的光晕）出现，
-  // 是"哪个部件"的唯一色彩线索，所以不能小到看不见。
-  const pad = new THREE.Mesh(
-    new THREE.CircleGeometry(Math.max(0.34, halfH * 0.8), 32),
-    kit.tint(mod.hue, { rough: 1, metal: 0, emissive: mod.hue, emissiveIntensity: 0.13 })
-  );
-  pad.rotation.x = -Math.PI / 2;
-  pad.position.set(wrapper.position.x, GROUND_Y + 0.006, wrapper.position.z);
-  world.add(pad);
+  const seat = new THREE.Vector3(L.pos[0], L.pos[1], L.pos[2]);
+  const extractVec = new THREE.Vector3(L.extract[0], L.extract[1], L.extract[2]);
+  const outPos = seat.clone().add(extractVec);
 
-  // 机位：把"相对元件"的坐标转成世界坐标
-  const rotY = new THREE.Matrix4().makeRotationY(wrapper.rotation.y);
-  const toWorld = (arr) => new THREE.Vector3(...arr).applyMatrix4(rotY).add(wrapper.position);
-
-  return {
-    mod, wrapper, anim, built, pad, halfH,
+  const p = {
+    mod, mover, wrapper, anim, built, seat, extractVec,
+    offFrom, offLook, outPos,
     hue: '#' + mod.hue.toString(16).padStart(6, '0'),
-    outward: new THREE.Vector3(Math.cos(a), 0, Math.sin(a)),
-    focusFrom: toWorld(mod.focus.from),
-    focusLook: toWorld(mod.focus.look ?? [0, 0, 0]),
     fov: mod.focus.fov ?? 34,
-    explode: 0, emphasize: 0, recede: 0, hover: 0,
-    enter: 0, delay: i * 0.085,
+    // 进场：从侧板外飞进来。mover 走世界轴，所以要换算成世界距离。
+    enterDist: mod.id === 'case' ? 0.95 : ENTER_GAP,
+    delay: INSTALL[mod.id] ?? 0,
+    /* 全部初始化为 0 —— 少写一个就会让 kit.damp(undefined, …) 算出 NaN，
+       而 NaN 一旦进到 position/scale 里，元件会直接消失 */
+    explode: 0, emphasize: 0, extract: 0, recede: 0, hover: 0, enter: 0,
+    /* 机位用普通数组：camera.js 的 flyTo 用 a[0]/a[1]/a[2] 取值，
+       传 Vector3 会取到 undefined → 被吞成 0 → 镜头飞到世界原点。 */
+    shot(at) {
+      return {
+        from: at.clone().add(this.offFrom).toArray(),
+        look: at.clone().add(this.offLook).toArray(),
+        fov: this.fov,
+      };
+    },
   };
+  anim.userData.__part = p;
+  return p;
 });
 
 /* ------------------------------------------------------------
-   3. 左栏列表
+   4. 左栏列表
    ------------------------------------------------------------ */
 
 const pickerList = document.getElementById('picker-list');
@@ -163,7 +226,7 @@ parts.forEach((p) => {
 });
 
 /* ------------------------------------------------------------
-   4. 右侧面板
+   5. 右侧面板
    ------------------------------------------------------------ */
 
 const panelEl = document.getElementById('panel');
@@ -183,6 +246,7 @@ function select(id, { instant = false } = {}) {
   appEl.classList.add('is-started');
   appEl.classList.toggle('is-open', !!p);
   document.documentElement.style.setProperty('--accent', p ? p.hue : '#c9a98a');
+  paintSky(p ? p.hue : 0xc9a98a);   // 空间色温跟着选中的元件走
 
   for (const btn of pickerList.querySelectorAll('.picker__item')) {
     if (p && btn.dataset.id === p.mod.id) btn.setAttribute('aria-current', 'true');
@@ -191,8 +255,11 @@ function select(id, { instant = false } = {}) {
 
   if (p) {
     fillPanel(p);
-    rig.flyTo({ from: p.focusFrom, look: p.focusLook, fov: p.fov },
-      { duration: REDUCED ? 0 : 1.45, instant: REDUCED || instant });
+    // 镜头飞到「抽出来之后」的位置：元件还在往那儿走，镜头也正好一起到
+    rig.flyTo(p.shot(p.outPos), {
+      duration: REDUCED ? 0 : 1.45,
+      instant: REDUCED || instant,
+    });
     rig.setIdleDrift(REDUCED ? 0 : 0.045);
     panelScroll.scrollTop = 0;
   } else {
@@ -237,7 +304,7 @@ function step(dir) {
 }
 
 /* ------------------------------------------------------------
-   5. 指针：悬停 / 拖动环绕 / 滚轮 / 点击选中
+   6. 指针：悬停 / 拖动环绕 / 滚轮 / 点击选中
    ------------------------------------------------------------ */
 
 const ray = new THREE.Raycaster();
@@ -255,7 +322,6 @@ function castAt(cx, cy) {
   while (o && !o.userData.__part) o = o.parent;
   return o ? o.userData.__part : null;
 }
-parts.forEach((p) => { p.anim.userData.__part = p; });
 
 let hovered = null;
 function hoverAt(cx, cy) {
@@ -285,14 +351,6 @@ canvas.addEventListener('pointermove', (e) => {
     if (drag.moved > 5) rig.addOrbit(dx, dy);
   } else {
     hoverAt(e.clientX, e.clientY);
-    // 视差
-    if (!REDUCED) {
-      const r = canvas.getBoundingClientRect();
-      rig.setParallax(
-        ((e.clientX - r.left) / r.width) * 2 - 1,
-        -(((e.clientY - r.top) / r.height) * 2 - 1)
-      );
-    }
   }
 });
 
@@ -310,7 +368,6 @@ canvas.addEventListener('pointercancel', () => { drag = null; canvas.classList.r
 canvas.addEventListener('pointerleave', () => {
   hovered = null;
   canvas.classList.remove('is-hot');
-  if (!REDUCED) rig.setParallax(0, 0);
 });
 
 canvas.addEventListener('wheel', (e) => {
@@ -325,8 +382,12 @@ window.addEventListener('keydown', (e) => {
 });
 
 /* ------------------------------------------------------------
-   6. 帧循环
+   7. 帧循环
    ------------------------------------------------------------ */
+
+/* ?part=xxx 是调试通道，直接看元件拆解态，不要让它等装配动画 */
+const BOOT_PART = q.get('part');
+if (BOOT_PART) parts.forEach((p) => { p.enter = 1; p.delay = 0; });
 
 stage.onTick((elapsed, dt) => {
   rig.update(elapsed, dt);
@@ -347,31 +408,38 @@ stage.onTick((elapsed, dt) => {
     p.emphasize = emph;
     p.built.update?.(elapsed, dt, emph);
 
-    /* --- 入场 + 其他元件退避 --- */
-    if (elapsed > p.delay) p.enter = kit.clamp01(p.enter + dt / 0.85);
+    /* --- 装配入场：从打开的侧板外飞进来 --- */
+    if (elapsed > p.delay) p.enter = kit.clamp01(p.enter + dt / ENTER_DUR);
     const e = REDUCED ? 1 : kit.easeOut(p.enter);
-    p.recede = REDUCED ? ((selected && p !== selected) ? 1 : 0)
-                       : kit.damp(p.recede, (selected && p !== selected) ? 1 : 0, 3.0, dt);
+
+    /* --- 抽出：选中就往 +X 走，其他退回座位 --- */
+    p.extract = REDUCED
+      ? (p === selected ? 1 : 0)
+      : kit.damp(p.extract, p === selected ? 1 : 0, 2.6, dt);
+
+    /* --- 没被选中的稍微缩一点，把注意力留给抽出来那件 --- */
+    p.recede = REDUCED
+      ? ((selected && p !== selected) ? 1 : 0)
+      : kit.damp(p.recede, (selected && p !== selected) ? 1 : 0, 3.0, dt);
     p.hover = kit.damp(p.hover, hovered === p ? 1 : 0, 8, dt);
 
-    // 入场：从上方轻轻落下（不穿到地面以下）；退避：沿局部 +Z（环外）推开
-    const s = (0.60 + 0.40 * e) * (1 - 0.30 * p.recede) * (1 + 0.05 * p.hover);
-    p.anim.scale.setScalar(s);
-    p.anim.position.set(0, (1 - e) * 0.55 - 0.40 * p.recede, 1.9 * p.recede);
-
-    p.wrapper.visible = e > 0.002;
-    p.pad.visible = e > 0.002;
-    // 标识点跟着元件一起被推开，不要留在地上当孤儿
-    p.pad.position.set(
-      p.wrapper.position.x + p.outward.x * 1.9 * p.recede,
-      GROUND_Y + 0.006,
-      p.wrapper.position.z + p.outward.z * 1.9 * p.recede
+    // 装配位移走世界轴：还没装进来的停在外侧，选中的沿 +X 抽出去
+    p.mover.position.set(
+      (1 - e) * p.enterDist + p.extractVec.x * p.extract,
+      p.extractVec.y * p.extract,
+      p.extractVec.z * p.extract
     );
+
+    // 元件自身的微动走局部轴（不影响「抽出去」的方向）
+    const s = (0.72 + 0.28 * e) * (1 - 0.16 * p.recede) * (1 + 0.04 * p.hover);
+    p.anim.scale.setScalar(s);
+
+    p.mover.visible = e > 0.002;
   }
 });
 
 /* ------------------------------------------------------------
-   7. 尺寸 / 可见性 / 首屏
+   8. 尺寸 / 可见性 / 首屏
    ------------------------------------------------------------ */
 
 if (window.ResizeObserver) {
@@ -384,12 +452,13 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) stage.stop(); else stage.start();
 });
 
-// 开场：从大远景推进到全景机位，元件逐个升起
+/* 开场：远景 → 机箱先落位 → 八件按装机顺序飞进来 → 推到全景机位。
+   镜头推进（2.9 s）和最后一件装好（gpu: 1.76 + 0.95 = 2.71 s）基本同时结束。 */
 rig.flyTo(ESTABLISH, { instant: true });
 stage.start();
 setTimeout(() => {
-  select(q.get('part') || null, { instant: false });
-  if (!q.get('part')) rig.flyTo(OVERVIEW, { duration: REDUCED ? 0 : 2.6, instant: REDUCED, bulge: 1.5 });
+  select(BOOT_PART || null, { instant: false });
+  if (!BOOT_PART) rig.flyTo(OVERVIEW, { duration: REDUCED ? 0 : 2.9, instant: REDUCED, bulge: 1.5 });
 }, 90);
 
 /* ------------------------------------------------------------
@@ -402,4 +471,4 @@ function esc(s) {
 }
 
 // 方便排查：控制台里能看到引擎句柄
-window.__anatomy = { stage, kit, rig, parts, select };
+window.__anatomy = { stage, kit, rig, parts, select, layout };

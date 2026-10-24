@@ -8,7 +8,9 @@
   "scripts": {
     "dev": "node build.mjs --dev",
     "build": "node build.mjs",
-    "audit": "node tools/audit.mjs"
+    "audit": "node tools/audit.mjs",
+    "place": "node tools/place.mjs",
+    "check": "node tools/audit.mjs && node tools/place.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.2"
