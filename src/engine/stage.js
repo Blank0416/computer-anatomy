@@ -58,7 +58,7 @@ export function createStage(canvas) {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.12;
+  renderer.toneMappingExposure = 1.2;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 
   const scene = new THREE.Scene();
@@ -107,9 +107,15 @@ export function createStage(canvas) {
   // 开口侧（+X）内腔补光：机箱自己的壁会把主光挡在外面，
   // 不补这一盏，装进去的元件全埋在阴影里、只剩机箱外壳亮。
   // 方向性补光、不投影 —— 只负责把内腔从黑提到能看清结构。
-  const inner = new THREE.DirectionalLight(0xbdd0e2, 0.55);
+  const inner = new THREE.DirectionalLight(0xbdd0e2, 0.92);
   inner.position.set(5.2, 1.4, 1.8);
   scene.add(inner);
+
+  // 抽出件补光：给「点开后被抽到机身外侧」的那个元件单独补一盏，
+  // 它离开机箱就失去了内腔反射，不补会暗成一团看不清纹理。
+  const partFill = new THREE.DirectionalLight(0xf0e2cd, 1.15);
+  partFill.position.set(7.5, 5.0, 4.5);
+  scene.add(partFill);
 
   /* ---------- 主循环 ---------- */
 

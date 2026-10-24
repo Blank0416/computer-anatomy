@@ -53,7 +53,10 @@ const rig = createCameraRig(stage.camera);
    半径在机位距离、该 fov 下占画面多少，要求 ≤80%（最坏是包围盒的
    对角，所以留白比标称的更宽）。实测显卡最贪，1.45 时占 114%，
    2.15 时降到 77%，其余都在 62%~77%。改机位后重跑那个脚本。 */
-const K_FOCUS = 2.15;
+/* 元件机位：展开态包围球半径占画面短边一半的比例。0.62 ≈ 四周留 38% 白。
+   固定倍率 K_FOCUS 已被「按包围球自动解距」取代 —— 元件重做后展开态尺寸会差很多，
+   固定距离必然让大件顶到画面边缘。 */
+const FILL = 0.45;
 
 /* 全景：从打开的侧板（+X）斜前上方看进去，整机都在画面里。
    整机 0.80 × 1.70 × 1.72，最远的角离注视点 1.26 —— 距离 6.2、fov 32 时
@@ -168,10 +171,30 @@ const parts = MODULES.map((mod) => {
   const quat = new THREE.Quaternion().setFromEuler(
     new THREE.Euler(L.rot[0], L.rot[1], L.rot[2], 'XYZ')
   );
-  const offFrom = new THREE.Vector3(...mod.focus.from)
-    .multiplyScalar(L.scale * K_FOCUS)
+
+  /* 机位自动装框：先临时炸开到 t=1 量一次包围球（展开态才是看得最满的状态），
+     再按 fov 反解出「刚好装下」的距离，取它和作者给定机位距离的较大者。
+     画面中心对准展开态包围球心 —— 有些件的拆解会上抬（散热器），
+     对准原点会让它跑到画面外。 */
+  const fovV = mod.focus.fov ?? 34;
+  built.setExplode(1);
+  built.group.updateMatrixWorld(true);
+  const sphere = new THREE.Box3()
+    .setFromObject(built.group)
+    .getBoundingSphere(new THREE.Sphere());
+  built.setExplode(0);
+  built.group.updateMatrixWorld(true);
+
+  const dirLocal = new THREE.Vector3(...mod.focus.from);
+  const authored = dirLocal.length();     // 作者给的机位距离，作下限
+  dirLocal.normalize();
+  const fitDist =
+    sphere.radius / (FILL * Math.tan(THREE.MathUtils.degToRad(fovV / 2)));
+  const offFrom = dirLocal
+    .multiplyScalar(Math.max(authored, fitDist) * L.scale)
     .applyQuaternion(quat);
-  const offLook = new THREE.Vector3(...(mod.focus.look ?? [0, 0, 0]))
+  const offLook = sphere.center
+    .clone()
     .multiplyScalar(L.scale)
     .applyQuaternion(quat);
 

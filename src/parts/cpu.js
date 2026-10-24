@@ -1,7 +1,31 @@
 /* ============================================================
-   cpu.js — 处理器（范例实现，其他人照这个结构写）
-   拆解：基板 → 晶片 → 核心阵列 → 顶盖掀开 / 触点落下
-   动画：一道"取指—执行"波前斜着扫过 16 个核心
+   cpu.js — 处理器（LGA1851 台式机 CPU）
+   ------------------------------------------------------------
+   实物参照（DETAIL-SPEC §2）：
+     封装 45 × 37.5mm，Z-height 4.464 ± 0.133mm
+     基板（PCB）≈1.1mm，IHS 顶盖 ≈1.3mm，顶面 ≈37 × 30mm、四角 R2
+     LGA1851 触点阵列：0.9mm 间距、每个触点 Ø0.35
+     基板上一圈 0402 / 0603 贴片元件；一角 2 × 2mm 防呆三角；2 × 1mm 定位缺口
+
+   ── 坐标与尺寸约定 ──
+     局部 X = 45mm 那条边（1.14），局部 Z = 37.5mm 那条边（0.95）
+     → k = 1.14 / 45 = 0.02533 场景单位 / mm
+     原点 = 包围盒中心；底面 y = -0.105、IHS 顶面 y = +0.105
+     总高 0.21 是 layout.js 的锚定值（世界 X = -0.09 + 0.30 · 局部Y，
+     顶面落在 -0.0585，正好被散热器底座压住），所以不能改。
+     4.464mm × k = 0.113 —— 0.21 相当于把「厚度方向」放大 1.86×，
+     属于 DETAIL-SPEC §0.3 允许的可读性放大：不放大时基板厚 0.028，
+     在整机尺度下几乎是一片纸，看不出「基板 → 晶片 → 顶盖」的层次。
+
+   ── 为什么要做「空腔 IHS」──
+     真实顶盖是冲压的壳：周围一圈裙边站在基板上，中间是薄的顶板，
+     晶片藏在里面。做成实心盒子拆开时只能看到一块砖，做成壳才能看见
+     「晶片在盖子里」。这里的裙边 / 肩台 / 顶台三段也正好对上实物
+     顶盖的两级台阶。
+
+   ── 拆解（setExplode）──
+     顶盖抬起并侧转、晶片组上浮、16 个核心从中向外散开、触点阵列下沉。
+     所有位移都是 t 的直接函数（无累加、可逆）。
    ============================================================ */
 
 export default {
@@ -9,282 +33,350 @@ export default {
   name: '处理器',
   en: 'CPU',
   hue: 0xc9a98a,
-
-  // 机位相对本元件原点（main.js 会加上元件在世界里的位置）
   focus: { from: [1.55, 1.15, 1.95], look: [0, 0.30, 0], fov: 32 },
 
   build(kit) {
     const { THREE } = kit;
+    const D = kit.detail;
     const group = new THREE.Group();
-    const hue = 0xc9a98a;
 
-    /* ---------- 尺寸 ---------- */
-    const SUB = 1.14;      // 基板边长
-    const SUB_T = 0.062;   // 基板厚
-    const DIE = 0.60;      // 晶片边长
-    const DIE_T = 0.028;   // 晶片厚
-    const IHS = 0.94;      // 顶盖边长
-    const IHS_T = 0.085;   // 顶盖厚
+    /* ---------- 0. 尺寸常量（单位：场景单位；括号里是真实 mm） ---------- */
+    const SUB_W = 1.14;                 // 45mm
+    const SUB_D = 0.95;                 // 37.5mm
+    const Y_BOT = -0.105;               // 触点底面
+    const PAD_T = 0.012;                // 触点高
+    const SUB_T = 0.058;                // 基板厚（1.1mm，放大 1.86×）
+    const Y_SUB_TOP = Y_BOT + PAD_T + SUB_T;    // -0.035
 
-    // 垂直站位（y）
-    const ySub = 0;
-    const yDie = SUB_T / 2 + DIE_T / 2 + 0.004;
-    const yIhs = SUB_T / 2 + DIE_T + IHS_T / 2 + 0.012;
-    const yPin = -SUB_T / 2 - 0.016;
+    const DIE_W = 0.62;                 // 晶片 ≈24.5mm
+    const DIE_D = 0.50;
+    const DIE_T = 0.021;
+    const Y_DIE_BOT = Y_SUB_TOP;
+    const Y_DIE_TOP = Y_DIE_BOT + DIE_T;        // -0.014
+    const CORE_T = 0.006;                       // 核心在晶片表面上微微凸起
+    const CORE_N = 4;                           // 4 × 4 = 16 个核心
 
-    /* ---------- 1. 基板（绿色 PCB 换成低饱和青灰） ---------- */
-    const sub = kit.box(SUB, SUB_T, SUB, kit.mats.pcb);
-    sub.position.y = ySub;
-    group.add(sub);
+    const LID_W = 1.10;                 // 顶盖投影（略小于基板，留一圈基板边）
+    const LID_D = 0.92;
+    const LID_RIM_T = 0.05;             // 裙边壁厚
+    const Y_RIM_TOP = 0.040;            // 裙边顶 = 肩台底
+    const SHOULDER_T = 0.022;
+    const Y_SHOULDER_TOP = Y_RIM_TOP + SHOULDER_T;      // 0.062
+    const PLATEAU_W = 0.937;            // 顶台 37mm
+    const PLATEAU_D = 0.76;             // 顶台 30mm
+    const Y_TOP = 0.105;                // IHS 顶面（layout 锚点）
 
-    // 基板四周的微小元件（电容/电阻），让它像个真东西
-    const rng = kit.rng(20261024);
-    for (let i = 0; i < 22; i++) {
-      const side = i % 4;
-      const along = (rng() - 0.5) * (SUB - 0.16);
-      const off = (SUB / 2 - 0.045) * (side < 2 ? 1 : -1);
-      const w = 0.026 + rng() * 0.02;
-      const h = 0.018 + rng() * 0.012;
-      const len = 0.05 + rng() * 0.03;
-      const c = kit.box(
-        side < 2 ? len : w, h, side < 2 ? w : len,
-        rng() > 0.55 ? kit.mats.plasticMid : kit.mats.ceramic
-      );
-      c.position.set(side < 2 ? along : off, SUB_T / 2 + h / 2, side < 2 ? off : along);
-      group.add(c);
-    }
+    const PAD_COLS = 45;                // 45 × 41 = 1845 个触点（LGA1851）
+    const PAD_ROWS = 41;
+    const PAD_PITCH = 0.0228;           // 0.9mm
+    const PAD_SIZE = 0.0105;            // Ø0.35mm 的方形焊盘
 
-    // 基板顶面上的细走线（元件标识色，只用在少量强调上）
-    const traceMat = kit.glow(hue, 0.35);
-    for (let k = 0; k < 6; k++) {
-      const ang = (k / 6) * Math.PI * 2 + 0.3;
-      const r0 = DIE / 2 + 0.03;
-      const r1 = SUB / 2 - 0.06;
-      const t = kit.trace([
-        [Math.cos(ang) * r0, SUB_T / 2 + 0.004, Math.sin(ang) * r0],
-        [Math.cos(ang + 0.25) * (r0 + r1) / 2, SUB_T / 2 + 0.004, Math.sin(ang + 0.25) * (r0 + r1) / 2],
-        [Math.cos(ang + 0.1) * r1, SUB_T / 2 + 0.004, Math.sin(ang + 0.1) * r1],
-      ], 0.006, traceMat, 18);
-      group.add(t);
-    }
+    /* ---------- 1. 材质（全部走 kit 缓存 / detail 派生） ---------- */
+    const M = {
+      pcb: D.mat.pcb('#1a2a20'),                                  // 深绿基板
+      pcbEdge: D.mat.grain(0x16241b, { rough: 0.82, bump: 0.4 }),  // 基板侧壁（板边更暗）
+      gold: kit.mat('gold', { color: 0xd8b25e, roughness: 0.28, metalness: 0.95 }),
+      silicon: kit.mat('silicon', { color: 0x3d4552, roughness: 0.30, metalness: 0.55 }),
+      dieEdge: kit.mat('metalDark', { color: 0x2b303a, roughness: 0.45, metalness: 0.7 }),
+      coreFrame: kit.mat('plasticDark', { color: 0x22252b, roughness: 0.62, metalness: 0.35 }), // 晶片围胶框
+      nickel: kit.mat('metal', { color: 0xd2d6da, roughness: 0.16, metalness: 1.0 }),
+      lidSide: D.mat.brushed(0xb9bdc2, { rough: 0.30, metal: 0.92, repeat: 2.4 }),
+      smd: kit.mat('ceramic', { color: 0x6b6257, roughness: 0.72 }),
+      black: kit.mat('plasticDark', { color: 0x14171b, roughness: 0.85 }),
+      capTop: kit.mat('metalDark', { color: 0x4a4f56, roughness: 0.5, metalness: 0.8 }),
+    };
 
-    /* ---------- 2. 晶片（die）：核心阵列 + 缓存条 ---------- */
-    const die = new THREE.Group();
-    die.position.y = yDie;
-    group.add(die);
+    /* ---------- 2. 小工具 ---------- */
+    const rigs = [];
+    const rig = (obj, dx, dy, dz) => {
+      obj.userData.base = obj.position.clone();
+      rigs.push({ obj, d: new THREE.Vector3(dx, dy, dz) });
+      return obj;
+    };
 
-    const dieBase = kit.box(DIE, DIE_T, DIE, kit.mats.silicon);
-    die.add(dieBase);
+    /** 贴纸：MeshBasicMaterial（贴图在 Node 下是 null，不报错，见 detail.js） */
+    const sticker = (lines, w, h, o = {}) => {
+      const tex = D.tex.plate(lines, { w: 512, h: 128, ...o });
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex, transparent: true, opacity: o.opacity ?? 0.62,
+        depthWrite: false, toneMapped: true, side: THREE.DoubleSide,
+      });
+      return new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+    };
 
-    // 16 个核心，4×4。每个核心一份独立材质，才能做波前扫过。
-    const N = 4;
-    const cell = DIE / N;          // 0.15
-    const coreW = cell * 0.60;
-    const cores = [];
-    for (let j = 0; j < N; j++) {
-      for (let i = 0; i < N; i++) {
-        const coreMat = new THREE.MeshStandardMaterial({
-          color: new THREE.Color(kit.accent(hue, -0.12)),
-          emissive: new THREE.Color(hue),
-          emissiveIntensity: 0.06,
-          roughness: 0.42, metalness: 0.18,
-        });
-        const m = kit.box(coreW, 0.012, coreW, coreMat);
-        const x = (i - (N - 1) / 2) * cell;
-        const z = (j - (N - 1) / 2) * cell;
-        m.position.set(x, DIE_T / 2 + 0.006, z);
-        m.userData.base = new THREE.Vector3(x, DIE_T / 2 + 0.006, z);
-        m.userData.wave = (i + j) / (2 * N - 2);      // 0..1 波前相位
-        m.userData.coreMat = coreMat;
-        die.add(m);
-        cores.push(m);
+    const dummy = new THREE.Object3D();
+
+    /* ---------- 3. 触点阵列（InstancedMesh：1845 个焊盘一条 draw call） ---------- */
+    const padGroup = new THREE.Group();
+    group.add(padGroup);
+    const padGeo = new THREE.BoxGeometry(PAD_SIZE, PAD_T, PAD_SIZE);
+    const pads = new THREE.InstancedMesh(padGeo, M.gold, PAD_COLS * PAD_ROWS);
+    pads.castShadow = pads.receiveShadow = true;
+    let pi = 0;
+    for (let c = 0; c < PAD_COLS; c++) {
+      for (let r = 0; r < PAD_ROWS; r++) {
+        dummy.position.set(
+          (c - (PAD_COLS - 1) / 2) * PAD_PITCH,
+          Y_BOT + PAD_T / 2,
+          (r - (PAD_ROWS - 1) / 2) * PAD_PITCH,
+        );
+        dummy.updateMatrix();
+        pads.setMatrixAt(pi++, dummy.matrix);
       }
     }
+    pads.instanceMatrix.needsUpdate = true;
+    padGroup.add(pads);
+    rig(padGroup, 0, -0.30, 0);
 
-    // 核心之间的 L3 缓存条：夹在核心行/列之间
-    const cacheBar = (w, d, x, z) => {
-      const b = kit.box(w, 0.010, d, kit.mats.plasticDark);
-      b.position.set(x, DIE_T / 2 + 0.005, z);
-      b.userData.base = b.position.clone();
-      die.add(b);
-      return b;
-    };
-    const bars = [];
-    for (let j = 0; j < N - 1; j++) {
-      const z = (j - (N - 1) / 2 + 0.5) * cell;
-      bars.push(cacheBar(DIE * 0.92, cell * 0.12, 0, z));
-    }
-    for (let i = 0; i < N - 1; i++) {
-      const x = (i - (N - 1) / 2 + 0.5) * cell;
-      bars.push(cacheBar(cell * 0.12, DIE * 0.92, x, 0));
-    }
+    /* ---------- 4. 基板（PCB）+ 板面元件 ---------- */
+    const subGroup = new THREE.Group();
+    group.add(subGroup);
 
-    // 晶片边缘的内存控制器 / I/O 环
-    const ioMat = kit.tint(hue, { rough: 0.5, metal: 0.3 });
-    const ioBlocks = [];
-    for (let k = 0; k < 4; k++) {
-      const b = kit.box(k % 2 ? DIE * 0.20 : DIE * 0.74, 0.016, k % 2 ? DIE * 0.74 : DIE * 0.20, ioMat);
-      const s = DIE / 2 - 0.055;
-      if (k === 0) b.position.set(0, DIE_T / 2 + 0.008, s);
-      if (k === 1) b.position.set(s, DIE_T / 2 + 0.008, 0);
-      if (k === 2) b.position.set(0, DIE_T / 2 + 0.008, -s);
-      if (k === 3) b.position.set(-s, DIE_T / 2 + 0.008, 0);
-      b.userData.base = b.position.clone();
-      die.add(b);
-      ioBlocks.push(b);
-    }
-
-    /* ---------- 3. 顶盖 IHS + 底部触点 ---------- */
-    const ihs = new THREE.Group();
-    group.add(ihs);
-
-    const ihsPlate = kit.box(IHS, IHS_T, IHS, kit.mats.metal);
-    ihsPlate.position.y = yIhs;
-    ihs.add(ihsPlate);
-
-    // 顶盖四周的斜边（用四根细条示意倒角，比真做 bevel 便宜）
-    const rimMat = kit.mat('metal', { roughness: 0.34, metalness: 0.9, color: 0xb4bac0 });
-    for (let k = 0; k < 4; k++) {
-      const e = kit.box(k % 2 ? 0.03 : IHS, 0.018, k % 2 ? IHS : 0.03, rimMat);
-      e.position.set(
-        k % 2 ? (k === 1 ? IHS / 2 - 0.012 : -IHS / 2 + 0.012) : 0,
-        yIhs + IHS_T / 2 - 0.006,
-        k % 2 ? 0 : (k === 0 ? IHS / 2 - 0.012 : -IHS / 2 + 0.012)
-      );
-      ihs.add(e);
-    }
-
-    // 顶盖上的激光刻字位（一块拉丝区，不写具体字，避免贴图）
-    const etch = kit.box(IHS * 0.52, 0.004, IHS * 0.20, kit.mat('metal', { roughness: 0.28, metalness: 0.95, color: 0x8d939a }));
-    etch.position.set(-IHS * 0.16, yIhs + IHS_T / 2 + 0.002, 0);
-    ihs.add(etch);
-
-    // 触点阵列（底面），用 InstancedMesh 控制面数
-    const pinRows = 14;
-    const pinGroup = kit.pins(pinRows * pinRows, 1, kit.mats.gold, { w: 0.022, h: 0.012, d: 0.022 });
-    // pins 只做了一排，这里自己铺成面阵
-    pinGroup.clear();
+    // 基板本体：45 × 37.5，四角 45° 定位切角（真实 LGA 基板靠切角 + 边缺口保证装不反）。
+    // 用 Shape + ExtrudeGeometry 自建，变换与 D.chamferGeo 完全一致，保证总高 = SUB_T。
+    const subBevel = 0.006;
+    const subShape = new THREE.Shape();
     {
-      const spacing = (SUB - 0.16) / (pinRows - 1);
-      const geo = new THREE.BoxGeometry(0.024, 0.012, 0.024);
-      const inst = new THREE.InstancedMesh(geo, kit.mats.gold, pinRows * pinRows);
-      const m4 = new THREE.Matrix4();
-      let n = 0;
-      for (let j = 0; j < pinRows; j++) {
-        for (let i = 0; i < pinRows; i++) {
-          m4.makeTranslation(
-            (i - (pinRows - 1) / 2) * spacing,
-            yPin,
-            (j - (pinRows - 1) / 2) * spacing
-          );
-          inst.setMatrixAt(n++, m4);
-        }
+      const hw = SUB_W / 2 - subBevel;
+      const hd = SUB_D / 2 - subBevel;
+      const ch = 0.050;                                  // 2mm 的 45° 切角
+      subShape.moveTo(-hw + ch, -hd);
+      subShape.lineTo(hw - ch, -hd);
+      subShape.lineTo(hw, -hd + ch);
+      subShape.lineTo(hw, hd - ch);
+      subShape.lineTo(hw - ch, hd);
+      subShape.lineTo(-hw + ch, hd);
+      subShape.lineTo(-hw, hd - ch);
+      subShape.lineTo(-hw, -hd + ch);
+      subShape.closePath();
+    }
+    const subGeo = new THREE.ExtrudeGeometry(subShape, {
+      depth: Math.max(SUB_T - subBevel * 2, 0.0008),
+      bevelEnabled: true, bevelThickness: subBevel, bevelSize: subBevel,
+      bevelSegments: 1, steps: 1, curveSegments: 2,
+    });
+    subGeo.rotateX(-Math.PI / 2);
+    subGeo.translate(0, -(SUB_T / 2 - subBevel), 0);
+    const sub = new THREE.Mesh(subGeo, M.pcb);
+    sub.castShadow = sub.receiveShadow = true;
+    sub.position.y = Y_BOT + PAD_T + SUB_T / 2;
+    subGroup.add(sub);
+
+    // （板边倒角由 ExtrudeGeometry 的 bevel 负责：侧壁比顶面暗一档，正好是裸 FR4 的感觉）
+
+    // 基板顶面、晶片两侧的贴片元件（真实顶面的 0402/0603 都被顶盖压着，
+    // 只有拆开才看得见 —— 所以摆在 die 与顶盖裙边之间的带区里，避开裙边）
+    const smdBands = [];
+    for (const side of [-1, 1]) {
+      const field = D.parts.smdField(15, { w: 0.026, h: 0.012, d: 0.016 }, M.smd);
+      field.castShadow = field.receiveShadow = true;
+      field.userData.fill(
+        side * 0.34, side * 0.47, -0.34, 0.34, Y_SUB_TOP + 0.006, 7 + side,
+      );
+      subGroup.add(field);
+      smdBands.push(field);
+    }
+    // 靠 -Z 板边一排小电容（三颗一组的供电滤波）
+    for (let i = 0; i < 5; i++) {
+      const cap = D.parts.capacitor(0.018, 0.016, 0x5b544c);
+      cap.position.set((i - 2) * 0.075, Y_SUB_TOP + 0.008, -0.36);
+      subGroup.add(cap);
+    }
+    // 板角防呆三角（2 × 2mm 的金属标记，装反了会顶住插座）
+    const triShape = new THREE.Shape();
+    triShape.moveTo(-0.026, -0.022);
+    triShape.lineTo(0.026, -0.022);
+    triShape.lineTo(0, 0.022);
+    triShape.closePath();
+    const tri = new THREE.Mesh(new THREE.ShapeGeometry(triShape), M.gold);
+    tri.rotation.x = -Math.PI / 2;
+    tri.position.set(0.505, Y_SUB_TOP + 0.0015, -0.395);
+    subGroup.add(tri);
+
+    // 基板两侧的定位缺口（2 × 1mm）：在板边压两条与板边齐平的暗槽示意
+    for (const sz of [-1, 1]) {
+      const notch = kit.box(0.070, 0.014, 0.018, M.black);
+      notch.position.set(0, Y_BOT + PAD_T + SUB_T * 0.5, sz * (SUB_D / 2 - 0.009));
+      subGroup.add(notch);
+    }
+
+    /* ---------- 5. 晶片 + 16 个核心（拆开后从顶盖里露出来） ---------- */
+    const dieGroup = new THREE.Group();
+    group.add(dieGroup);
+
+    const die = D.parts.cbox(DIE_W, DIE_T, DIE_D, M.silicon, 0.0025, 0.010);
+    die.position.y = Y_DIE_BOT + DIE_T / 2;
+    dieGroup.add(die);
+
+    // 晶片边缘一圈深色围墙（真实 die 四周是基板焊盘区，视觉上压一道暗边）
+    for (const s of [-1, 1]) {
+      const wall = kit.box(DIE_W + 0.012, 0.005, 0.012, M.dieEdge);
+      wall.position.set(0, Y_DIE_BOT + 0.004, s * (DIE_D / 2 + 0.004));
+      dieGroup.add(wall);
+    }
+
+    // 16 个核心：共享几何 + 各自一份 kit 派生材质（要单独做波前发光），
+    // 每个核心外面再套一圈「围胶框」—— 真实 die 上每个 tile 边缘都有一道
+    // 环氧围胶/金属堤，把它框住。tile 与围胶一起做成 Group，拆解时整块飞出去。
+    const CORE_W = 0.100;
+    const CORE_D = 0.074;
+    const coreGeo = D.chamferGeo(CORE_W, CORE_T, CORE_D, 0.0016, 0.007);
+
+    /** 圆角矩形轮廓（核心围胶框 = 外框挖掉内框，挤出成一圈堤） */
+    const rrShape = (w, d, r) => {
+      const s = new THREE.Shape();
+      const hw = w / 2;
+      const hd = d / 2;
+      s.moveTo(-hw + r, -hd);
+      s.lineTo(hw - r, -hd); s.quadraticCurveTo(hw, -hd, hw, -hd + r);
+      s.lineTo(hw, hd - r); s.quadraticCurveTo(hw, hd, hw - r, hd);
+      s.lineTo(-hw + r, hd); s.quadraticCurveTo(-hw, hd, -hw, hd - r);
+      s.lineTo(-hw, -hd + r); s.quadraticCurveTo(-hw, -hd, -hw + r, -hd);
+      return s;
+    };
+    const ringOuter = rrShape(CORE_W + 0.007, CORE_D + 0.007, 0.010);
+    ringOuter.holes.push(rrShape(CORE_W - 0.001, CORE_D - 0.001, 0.008));
+    const ringGeo = new THREE.ExtrudeGeometry(ringOuter, {
+      depth: 0.0045, bevelEnabled: false, curveSegments: 3, steps: 1,
+    });
+    ringGeo.rotateX(-Math.PI / 2);
+    ringGeo.translate(0, -0.00225, 0);
+
+    const coreMatBase = kit.mat('silicon', {
+      color: 0x5c6675, roughness: 0.24, metalness: 0.62,
+      emissive: 0xffb066, emissiveIntensity: 0.18,
+    });
+    const cores = [];
+    const corePitchX = (DIE_W - 0.18) / CORE_N;         // 0.110
+    const corePitchZ = (DIE_D - 0.16) / CORE_N;         // 0.085
+    for (let i = 0; i < CORE_N; i++) {
+      for (let j = 0; j < CORE_N; j++) {
+        const mat = coreMatBase.clone();
+        const grp = new THREE.Group();
+        grp.position.set(
+          (i - (CORE_N - 1) / 2) * corePitchX,
+          Y_DIE_TOP + CORE_T / 2,
+          (j - (CORE_N - 1) / 2) * corePitchZ,
+        );
+
+        const core = new THREE.Mesh(coreGeo, mat);
+        core.castShadow = core.receiveShadow = true;
+        grp.add(core);
+
+        const ring = new THREE.Mesh(ringGeo, M.coreFrame);
+        ring.position.y = -0.0008;
+        ring.castShadow = ring.receiveShadow = true;
+        grp.add(ring);
+
+        grp.userData.base = grp.position.clone();
+        grp.userData.mat = mat;
+        grp.userData.wave = (i + j) / (2 * (CORE_N - 1));   // 对角波前 0→1
+        dieGroup.add(grp);
+        cores.push(grp);
       }
-      inst.instanceMatrix.needsUpdate = true;
-      inst.castShadow = true;
-      pinGroup.add(inst);
-      pinGroup.userData.baseY = yPin;
-    }
-    group.add(pinGroup);
-
-    /* ---------- 4. 数据流光点（沿核心阵列流动） ---------- */
-    const flowMat = kit.glow(hue, 2.2);
-    const flows = [];
-    for (let k = 0; k < 7; k++) {
-      const d = new THREE.Mesh(new THREE.SphereGeometry(0.017, 8, 6), flowMat);
-      d.userData.t = k / 7;
-      d.userData.lane = k % 4;
-      d.userData.speed = 0.16 + (k % 3) * 0.05;
-      die.add(d);
-      flows.push(d);
     }
 
-    /* ---------- 基准位（用于 explode 复原） ---------- */
-    const base = {
-      ihsY: yIhs,
-      dieY: yDie,
-      pinY: yPin,
-    };
+    // 核心之间的 L3 缓存条（视觉上把 16 核连成一片，也让 die 不至于太空）
+    for (const s of [-1, 1]) {
+      const l3 = kit.box(DIE_W - 0.16, 0.004, 0.026, M.dieEdge);
+      l3.position.set(0, Y_DIE_TOP + 0.002, s * (DIE_D / 2 - 0.035));
+      dieGroup.add(l3);
+    }
+    // 一侧的 I/O + 内存控制器带（沿 die 的 -X 边，避开 16 核阵列）
+    const io = kit.box(0.040, 0.004, DIE_D - 0.20, M.dieEdge);
+    io.position.set(-(DIE_W / 2 - 0.045), Y_DIE_TOP + 0.002, 0);
+    dieGroup.add(io);
 
-    /* ---------- 拆解 / 动画 ---------- */
-    return {
-      group,
-      legend: [
-        { text: '顶盖 IHS', desc: '把晶片的热量摊开传给散热器' },
-        { text: '晶片 Die', desc: '真正的硅，电路刻在这上面' },
-        { text: '核心阵列', desc: '16 个独立运算单元并排工作' },
-        { text: '基板与触点', desc: '上千个触点把信号送到主板' },
-      ],
+    rig(dieGroup, 0, 0.26, 0);
 
-      /** t: 0 = 合拢，1 = 完全拆解。纯函数，可来回擦洗 */
-      setExplode(t) {
-        const e = kit.easeInOut(t);
+    /* ---------- 6. IHS 顶盖（空腔壳：裙边 → 肩台 → 顶台，两段台阶） ---------- */
+    const lid = new THREE.Group();
+    group.add(lid);
+    const rimTop = Y_RIM_TOP;
+    const rimH = rimTop - Y_SUB_TOP;                 // 裙边高度
+    const rimY = Y_SUB_TOP + rimH / 2;
 
-        // 顶盖：抬起并侧移、微转
-        ihs.position.set(-0.22 * e, (base.ihsY + 0.82) * e, 0);
-        ihs.rotation.z = -0.10 * e;
-        ihs.rotation.y = 0.16 * e;
+    for (const sz of [-1, 1]) {
+      const wall = D.parts.cbox(LID_W, rimH, LID_RIM_T, M.nickel, 0.004, 0.010);
+      wall.position.set(0, rimY, sz * (LID_D / 2 - LID_RIM_T / 2));
+      lid.add(wall);
+    }
+    for (const sx of [-1, 1]) {
+      const wall = D.parts.cbox(LID_RIM_T, rimH, LID_D - LID_RIM_T * 2, M.nickel, 0.004, 0.010);
+      wall.position.set(sx * (LID_W / 2 - LID_RIM_T / 2), rimY, 0);
+      lid.add(wall);
+    }
 
-        // 晶片：抬起来一点，露出下面的基板走线
-        die.position.y = base.dieY + 0.30 * e;
+    // 肩台（顶盖的一级台阶）
+    const shoulder = D.parts.cbox(LID_W, SHOULDER_T, LID_D, M.lidSide, 0.006, 0.026);
+    shoulder.position.y = Y_RIM_TOP + SHOULDER_T / 2;
+    lid.add(shoulder);
 
-        // 核心：各自向上浮起并散开（越靠外的浮得越高，像爆炸图）
-        for (const c of cores) {
-          const b = c.userData.base;
-          const rad = Math.hypot(b.x, b.z) / (DIE * 0.5);
-          const lift = 0.10 + rad * 0.16;
-          c.position.set(
-            b.x * (1 + 0.26 * e),
-            b.y + lift * e,
-            b.z * (1 + 0.26 * e)
-          );
-          c.rotation.y = 0.35 * e * (b.x >= 0 ? 1 : -1);
-        }
+    // 顶台（37 × 30mm、四角 R2 的二级台阶）
+    const plateau = D.parts.cbox(PLATEAU_W, Y_TOP - Y_SHOULDER_TOP, PLATEAU_D, M.lidSide, 0.010, 0.050);
+    plateau.position.y = (Y_SHOULDER_TOP + Y_TOP) / 2;
+    lid.add(plateau);
 
-        // 缓存条：横向拉开一点
-        for (const b of bars) {
-          const bb = b.userData.base;
-          b.position.set(bb.x * (1 + 0.18 * e), bb.y + 0.055 * e, bb.z * (1 + 0.18 * e));
-        }
+    // 顶盖上的激光刻字（型号 / 规格 / 一维码）
+    const etch = sticker(['LGA1851   24C / 32T', '5.8 GHz TURBO  ·  125 W'], 0.80, 0.18, {
+      ink: '#8a8f95', opacity: 0.55,
+    });
+    etch.rotation.x = -Math.PI / 2;
+    etch.position.set(-0.02, Y_TOP + 0.0008, 0.10);
+    lid.add(etch);
 
-        // I/O 环：向外推出
-        for (const b of ioBlocks) {
-          const bb = b.userData.base;
-          b.position.set(bb.x * (1 + 0.34 * e), bb.y + 0.032 * e, bb.z * (1 + 0.34 * e));
-        }
+    const code = sticker(['2D', 'CODE'], 0.20, 0.12, { ink: '#9aa0a6', opacity: 0.5, barcode: true });
+    code.rotation.x = -Math.PI / 2;
+    code.position.set(0.33, Y_TOP + 0.0008, -0.22);
+    lid.add(code);
 
-        // 触点：向下降落
-        pinGroup.position.y = -0.55 * e;
-      },
+    // 刻字边缘的一圈细线（真实顶盖上有道压痕）
+    const seam = kit.box(PLATEAU_W - 0.06, 0.0016, 0.002, M.black);
+    seam.position.set(0, Y_TOP + 0.0006, -PLATEAU_D / 2 + 0.035);
+    lid.add(seam);
 
-      /** 持续动画：斜向"取指—执行"波前扫过核心 + 数据流光子
-       *  注意：位置一律由 setExplode 负责，这里只改发射光和光点位置。 */
-      update(elapsed, dt, emphasis = 0) {
-        // 波前：沿 (i+j) 对角方向扫，约 2.4 秒一轮
-        const phase = (elapsed * 0.42) % 1;
-        for (const c of cores) {
-          const d = Math.abs(c.userData.wave - phase);
-          const w = Math.max(0, 1 - Math.min(d, 1 - d) * 7);   // 窄尖峰
-          const idle = 0.06 + emphasis * 0.06;
-          c.userData.coreMat.emissiveIntensity = idle + w * (0.85 + emphasis * 0.8);
-        }
+    /* ---------- 7. 拆解 / 动画 / 图例 ---------- */
+    let explodeT = 0;
+    function setExplode(t) {
+      explodeT = kit.clamp01(t);
+      const e = kit.easeInOut(explodeT);
+      for (const r of rigs) {
+        const b = r.obj.userData.base;
+        r.obj.position.set(b.x + r.d.x * e, b.y + r.d.y * e, b.z + r.d.z * e);
+      }
+      // 顶盖：抬起 + 侧转（转一点就能看见里面是空壳）
+      lid.position.y = 0.52 * e;
+      lid.rotation.z = -0.10 * e;
+      lid.rotation.y = 0.14 * e;
+      // 16 个核心：一边上浮一边从中向外散开
+      for (const c of cores) {
+        const b = c.userData.base;
+        const rad = Math.hypot(b.x, b.z) / 0.36;
+        c.position.set(b.x * (1 + 0.20 * e), b.y + (0.06 + rad * 0.10) * e, b.z * (1 + 0.20 * e));
+      }
+    }
 
-        // 数据流：光点沿核心阵列上方的总线单向跑
-        for (const f of flows) {
-          f.userData.t = (f.userData.t + dt * f.userData.speed * (0.55 + emphasis * 0.9)) % 1;
-          const tt = f.userData.t;
-          const span = DIE * 0.92;
-          f.position.set(
-            -span / 2 + tt * span,
-            DIE_T / 2 + 0.055,
-            (f.userData.lane - 1.5) * (DIE / 4)
-          );
-          // 两端淡出，避免光点"凭空出现/消失"
-          const edge = Math.min(tt, 1 - tt);
-          flowMat.opacity = 1;
-          f.visible = edge > 0.06;
-        }
-      },
-    };
+    function update(elapsed, dt, emphasis = 0) {
+      // 对角波前扫过 16 个核心：只由 elapsed 决定，无状态
+      const phase = (elapsed * 0.42) % 1;
+      for (const c of cores) {
+        const w = c.userData.wave;
+        const d = Math.abs(w - phase);
+        const k = Math.max(0, 1 - Math.min(d, 1 - d) * 7);
+        c.userData.mat.emissiveIntensity = 0.16 + k * (0.85 + emphasis * 0.9);
+      }
+    }
+
+    setExplode(0);
+
+    const legend = [
+      { text: '顶盖 IHS', desc: '金属壳把晶片的热量摊开，再交给散热器底座' },
+      { text: '晶片 Die', desc: '真正的硅片，几十亿个晶体管刻在这块小方片上' },
+      { text: '核心阵列', desc: '16 个独立运算单元并排工作，谁热谁降温' },
+      { text: '基板与触点', desc: '1845 个金属触点，把信号和电送到主板插座' },
+      { text: '贴片元件', desc: '盖子底下那圈小电容，给核心供电做滤波' },
+    ];
+
+    return { group, setExplode, update, legend };
   },
 };

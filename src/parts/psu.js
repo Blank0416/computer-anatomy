@@ -1,471 +1,612 @@
 /* ============================================================
-   psu.js — 电源（PSU）
-   拆解：外壳 → 风扇 → EMI 滤波 → 整流 / 变压器 → 电容组 → 模组输出口
-   动画：AC 侧 → DC 侧的"能量流"，以及电容组缓慢的充放电呼吸。
-   注意：刻意不出现任何电压数字/警示标识 —— 这里只讲清一件事：
-        市电是交流、且方向乱变，电源把它整流成直流，再切成高频、
-        用变压器降到低压，最后再整流滤波一遍送给整机。
+   psu.js — 电脑八大件 · 电源（ATX 3.1 / 全模组 / 12V-2x6）
+   ------------------------------------------------------------
+   精修目标（对照"粗糙"的三个来源）：
+     ① 表面：钢板拉丝+压筋、蜂窝出风网、模组面板丝印、铭牌
+     ② 细零件：135mm 11 叶风扇、EMI 滤波、桥堆、PFC 电感、
+        2 颗大电解、主变压器、同步整流散热片、12 颗固态电容、
+        16 个模组接口（24pin/12V-2x6/EPS×2/PCIe×4/SATA×6/Molex×2）、
+        螺丝/铜柱/线束/热缩套管
+     ③ 倒角：外壳、风扇框、模组接口、散热片全部走 detail.parts.cbox
+   拆解：上盖+风扇抬起 → 两侧板外张 → 后面板/模组面板让位 →
+         内部按 AC→DC 顺序（EMI→整流→PFC→电解→变压器→整流→输出）
+         依次升高并轻微前移
+   动画：AC→DC 能量流沿主回路跑 + 电容呼吸 + 风扇转速
    ============================================================ */
 
 export default {
   id: 'psu',
   name: '电源',
   en: 'PSU',
-  hue: 0xbfa089,
+  hue: 0x8ea3b0,
 
-  // 机位相对本元件原点（main.js 会加上元件在世界里的位置）
-  // 从右前上方 31° 俯看，外壳顶盖的风扇和内部的元件分层都能看到
-  // 机位随原点归位一起补偿，保证画面构图和设计时一致
-  focus: { from: [1.43, 1.30, 1.65], look: [-0.02, 0.02, 0], fov: 34 },
+  focus: { from: [1.43, 1.30, 1.65], look: [0, 0.02, 0], fov: 34 },
 
   build(kit) {
     const { THREE } = kit;
+    const D = kit.detail;
     const group = new THREE.Group();
-    const hue = 0xbfa089;
+    // 所有零件都挂在 content 下，最后按包围盒把 content 摆正到原点
+    const content = new THREE.Group();
+    group.add(content);
 
-    /* ---------- 尺寸（真电源 150×86×140mm，等比缩到 1.22×0.70×1.14） ---------- */
-    const HL = 0.57;    // x 半长（前后方向）
-    const HH = 0.35;    // y 半高
-    const HW = 0.61;    // z 半宽
-    const SH = 0.020;   // 钢板厚
+    /* ---------- 机身尺寸（1 单位 ≈ 116mm 实机） ----------
+       X = 进深（-X 后面板 AC 进线，+X 全模组输出）
+       Y = 高度，Z = 宽度（150mm 那一面）                    */
+    const HX = 0.60;        // 半进深
+    const HY = 0.3535;      // 半高（86mm）
+    const HZ = 0.611;       // 半宽（150mm）
+    const T = 0.020;        // 钢板厚
+    const Y_PCB = -0.288;   // 主 PCB 高度
+    const Y_TOP = Y_PCB + 0.009;   // PCB 上表面
 
-    /* ---------- 可拆解子系统登记表 ---------- */
+    /* ---------- 材质包 ---------- */
+    const perfFan = D.tex.perf({ size: 128, step: 12, hole: 0.40, repeat: 2 });
+    const perfHex = D.tex.perf({ size: 128, step: 10, hole: 0.37, repeat: 3 });
+    const meshFan = kit.mat('metalDark', { color: 0x323840, roughness: 0.48, metalness: 0.55 });
+    if (perfFan) { meshFan.transparent = true; meshFan.alphaTest = 0.42; meshFan.side = THREE.DoubleSide; meshFan.alphaMap = perfFan; }
+    const meshHex = kit.mat('metalDark', { color: 0x2c3239, roughness: 0.52, metalness: 0.52 });
+    if (perfHex) { meshHex.transparent = true; meshHex.alphaTest = 0.42; meshHex.side = THREE.DoubleSide; meshHex.alphaMap = perfHex; }
+
+    const M = {
+      steel: D.mat.brushed(0x5b636c, { rough: 0.38, metal: 0.72, repeat: 2.4 }),
+      steelDark: D.mat.brushed(0x434a52, { rough: 0.50, metal: 0.62, repeat: 2 }),
+      inner: D.mat.brushed(0x858d96, { rough: 0.42, metal: 0.68, repeat: 2 }),
+      alu: D.mat.brushed(0xa8aeb5, { rough: 0.32, metal: 0.78, repeat: 3 }),
+      pcb: D.mat.pcb('#15302b'),
+      pcbDark: D.mat.pcb('#1b2f33'),
+      copper: kit.mat('copper', { roughness: 0.28, metalness: 0.85 }),
+      enamel: kit.mat('copper', { color: 0xa4603c, roughness: 0.40, metalness: 0.60 }),
+      gold: kit.mats.gold,
+      ceramic: kit.mats.ceramic,
+      black: D.mat.grain(0x191d21, { rough: 0.82, bump: 0.35 }),
+      sleeve: D.mat.grain(0x252b33, { rough: 0.88 }),
+      sleeveBlue: D.mat.grain(0x2b3a50, { rough: 0.86 }),
+      conn: kit.mat('plasticDark', { color: 0x22262b, roughness: 0.60 }),
+      capSkin: kit.mat('plasticDark', { color: 0x24384f, roughness: 0.54 }),
+      ferrite: kit.mat('plasticDark', { color: 0x2a2d31, roughness: 0.72 }),
+      rubber: kit.mats.rubber,
+      tape: kit.mat('plastic', { color: 0xbfb184, roughness: 0.72, metalness: 0.02 }),
+      label: kit.mat('metal', { color: 0xc6c9cd, roughness: 0.40, metalness: 0.52 }),
+      fanFrame: kit.mat('plasticDark', { color: 0x2b3037, roughness: 0.70 }),
+      blade: kit.mat('plasticMid', { color: 0x6b727a, roughness: 0.52 }),
+      ledCold: kit.glow(0x9fd2e6, 1.0),
+      ledWarm: kit.glow(0xe6a877, 1.0),
+    };
+
+    /* ---------- 小工具 ---------- */
+    const put = (parent, mesh, x, y, z) => { mesh.position.set(x, y, z); parent.add(mesh); return mesh; };
+    const screwAt = (parent, x, y, z, axis, r = 0.015, h = 0.007) => {
+      const s = D.parts.screw(r, h, M.steel);
+      s.position.set(x, y, z);
+      if (axis === 'x') s.rotation.z = Math.PI / 2;
+      else if (axis === 'z') s.rotation.x = Math.PI / 2;
+      parent.add(s);
+      return s;
+    };
+    const plateMat = (lines, o = {}) => {
+      const tex = D.tex.plate(lines, {
+        w: o.w ?? 256, h: o.h ?? 64,
+        font: o.font ?? '600 30px "Microsoft YaHei", sans-serif',
+        ink: o.ink ?? '#d3d7d9', bg: o.bg ?? null,
+        align: o.align ?? 'center', barcode: !!o.barcode, seed: o.seed ?? 7,
+      });
+      return new THREE.MeshBasicMaterial({
+        map: tex, transparent: true, opacity: o.opacity ?? 0.86,
+        depthWrite: false, side: THREE.DoubleSide, toneMapped: true,
+      });
+    };
+    const labelPlane = (parent, lines, w, h, pos, o = {}) => {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), plateMat(lines, o));
+      m.position.set(pos[0], pos[1], pos[2]);
+      if (o.rot) m.rotation.set(o.rot[0], o.rot[1], o.rot[2]);
+      parent.add(m);
+      return m;
+    };
+
+    /* ---------- 拆解 rigs（可逆：位置 = 基准 + 偏移·进度） ---------- */
     const rigs = [];
-    const rig = (g, dx, dy, dz) => {
-      g.userData.base = g.position.clone();
-      rigs.push({ g, d: new THREE.Vector3(dx, dy, dz) });
+    const rig = (obj, t0, t1, off) => {
+      rigs.push({ obj, t0, t1, off: new THREE.Vector3(off[0], off[1], off[2]) });
+      return obj;
+    };
+
+    /* ============================================================
+       1. 底板 / 侧板 / 后面板 / 模组面板（钣金外壳）
+       ============================================================ */
+    const shellG = new THREE.Group();
+    content.add(shellG);
+
+    // 底板 + 加强筋
+    put(shellG, D.parts.cbox(1.16, T, 1.18, M.steel, 0.004, 0.010), 0, -HY + T / 2, 0);
+    for (let i = 0; i < 3; i++) {
+      put(shellG, kit.box(1.05, 0.015, 0.028, M.steelDark), 0, -HY + T + 0.008, -0.36 + i * 0.36);
+    }
+    // 底板四角橡胶垫（藏在外壳内，不越过 min.y）
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      put(shellG, kit.cyl(0.045, 0.045, 0.012, 10, M.rubber), sx * 0.40, -HY + T + 0.006, sz * 0.44);
+    }
+
+    // 左右侧板（各自成组，拆解时外张）
+    const sideRigs = [];
+    for (const s of [-1, 1]) {
+      const g = new THREE.Group();
+      content.add(g);
+      sideRigs.push({ g, z: s * 0.088 });
+      put(g, D.parts.cbox(1.17, 0.690, T, M.steel, 0.004, 0.008), 0, 0, s * (HZ - T / 2));
+      // 内侧压筋（增加钢板"有厚度"的观感）
+      put(g, kit.box(0.98, 0.055, 0.013, M.steelDark), 0, 0.055, s * (HZ - T - 0.014));
+      put(g, kit.box(0.86, 0.012, 0.010, M.steelDark), 0, -0.10, s * (HZ - T - 0.010));
+      // 侧板螺丝
+      for (const x of [-0.46, 0.46]) {
+        screwAt(g, x, -0.265, s * (HZ - 0.002), 'z');
+      }
+      // 侧板上的 ATX 3.1 标识（丝印）
+      labelPlane(g, ['ATX 3.1'], 0.20, 0.045, [0.30, 0.115, s * (HZ + 0.002)],
+        { w: 256, h: 64, opacity: 0.55 });
+    }
+
+    // 后面板（-X）：AC 插座 + 开关 + 蜂窝出风网
+    const backG = new THREE.Group();
+    content.add(backG);
+    put(backG, D.parts.cbox(T, 0.690, 1.19, M.steel, 0.004, 0.010), -HX + T / 2, 0, 0);
+
+    // 蜂窝出风网（alphaMap 镂空，便宜且真像冲压网）
+    const rearVent = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.48), meshHex);
+    rearVent.rotation.y = -Math.PI / 2;
+    rearVent.position.set(-HX - 0.001, -0.02, -0.27);
+    backG.add(rearVent);
+
+    // IEC C14 进线座
+    const inlet = new THREE.Group();
+    inlet.position.set(-HX - 0.001, 0.175, 0.335);
+    backG.add(inlet);
+    put(inlet, D.parts.cbox(0.018, 0.108, 0.098, M.black, 0.003, 0.010), -0.009, 0, 0);
+    put(inlet, kit.box(0.016, 0.088, 0.078, M.black), 0.002, 0, 0);
+    put(inlet, kit.box(0.010, 0.030, 0.007, M.gold), -0.005, 0.008, -0.016);
+    put(inlet, kit.box(0.010, 0.030, 0.007, M.gold), -0.005, 0.008, 0.016);
+    put(inlet, kit.box(0.010, 0.008, 0.030, M.gold), -0.005, -0.026, 0);
+    labelPlane(inlet, ['AC IN'], 0.075, 0.024, [-0.001, 0.075, 0],
+      { rot: [0, -Math.PI / 2, 0], w: 128, h: 48, opacity: 0.5 });
+
+    // 电源开关（带红点）
+    const sw = new THREE.Group();
+    sw.position.set(-HX - 0.004, 0.175, 0.205);
+    backG.add(sw);
+    put(sw, kit.box(0.020, 0.062, 0.046, M.black), -0.002, 0, 0);
+    const rocker = put(sw, kit.box(0.014, 0.040, 0.032, kit.mat('plastic', { color: 0x2b3036, roughness: 0.66 })), -0.012, 0.004, 0);
+    rocker.rotation.z = 0.16;
+    put(sw, kit.box(0.006, 0.007, 0.007, kit.tint(0xc0503f, { rough: 0.45 })), -0.019, 0.017, 0);
+
+    // 铭牌（80 PLUS GOLD / 全模组 / ATX 3.1）
+    labelPlane(backG,
+      ['80 PLUS GOLD', 'FULLY MODULAR', 'ATX 3.1 · 12V-2x6'],
+      0.26, 0.10, [-HX - 0.002, -0.155, 0.30],
+      { rot: [0, -Math.PI / 2, 0], w: 384, h: 160, opacity: 0.80, ink: '#d9d3bf' });
+    // 序列号小贴
+    labelPlane(backG, ['SN 3A11-2026'], 0.13, 0.030, [-HX - 0.002, -0.235, 0.30],
+      { rot: [0, -Math.PI / 2, 0], w: 192, h: 48, opacity: 0.6, barcode: true });
+    // 四角螺丝
+    for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
+      screwAt(backG, -HX - 0.006, sy * 0.305, sz * 0.545, 'x', 0.016, 0.008);
+    }
+
+    // 模组输出面板（+X）
+    const modG = new THREE.Group();
+    content.add(modG);
+    put(modG, D.parts.cbox(T, 0.690, 1.19, M.steelDark, 0.004, 0.010), HX - T / 2, 0, 0);
+    // 面板内侧铜排（拆开上盖能看见）
+    for (let i = 0; i < 4; i++) {
+      put(modG, kit.box(0.052, 0.010, 0.24, M.copper), HX - T - 0.030 - i * 0.008, 0.10 - i * 0.07, -0.26 + i * 0.10);
+    }
+    // 四角螺丝
+    for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
+      screwAt(modG, HX + 0.004, sy * 0.305, sz * 0.545, 'x', 0.016, 0.008);
+    }
+
+    /* ---------------- 模组接口工厂 ----------------
+       开口朝 +X；引脚用 InstancedMesh 批量生成（成排零件不逐个建 mesh） */
+    const connectors = [];
+    const mkConn = (o) => {
+      const { y, z, cols, rows = 2, pitch = 0.036, hero = false, slim = false } = o;
+      const g = new THREE.Group();
+      g.position.set(0, y, z);
+      modG.add(g);
+      const w = cols * pitch + 0.026;
+      const h = rows * pitch + (slim ? 0.024 : 0.040);
+      const depth = slim ? 0.026 : 0.034;
+      const body = hero
+        ? D.parts.cbox(depth, h, w, M.conn, 0.003, 0.006)
+        : kit.box(depth, h, w, M.conn);
+      body.position.x = HX + depth / 2 - 0.004;
+      g.add(body);
+      // 深色 Wafer 面
+      put(g, kit.box(0.005, h - 0.010, w - 0.010, M.black), HX + depth - 0.005, 0, 0);
+      // 引脚（沿 X 方向伸出，4.45mm ≈ 0.038）
+      const pinD = 0.038;
+      for (let r = 0; r < rows; r++) {
+        const row = D.parts.pinRow(cols, pitch, { w: 0.011, h: 0.009, d: pinD }, M.gold);
+        row.rotation.y = Math.PI / 2;
+        row.position.set(HX + depth + pinD * 0.30, (r - (rows - 1) / 2) * pitch, 0);
+        g.add(row);
+      }
+      connectors.push(g);
       return g;
     };
 
-    const steelMat = kit.mat('metalDark', { roughness: 0.55, metalness: 0.62 });
-    const steelMat2 = kit.mat('metalDark', { roughness: 0.48, metalness: 0.70, color: 0x4c5259 });
-    // 深色钢：整流桥、散热片、电容顶盖 —— 浅色金属只留给标签面，否则整个电源会亮成浅盒子
-    const steelMat3 = kit.mat('metalDark', { roughness: 0.44, metalness: 0.72, color: 0x565d66 });
-
-    /* ============================================================
-       1. 底板 / 背板（钢板机壳，顺带当散热片和屏蔽层）
-       ============================================================ */
-    const chassisG = new THREE.Group();
-    group.add(chassisG);
-    rig(chassisG, 0, 0, 0);   // 底板不动，作为整个元件的参照
-
-    const floor = kit.box(HL * 2, SH, HW * 2, steelMat);
-    floor.position.y = -HH + SH / 2;
-    chassisG.add(floor);
-
-    // 背板：市电就是从这里进来的
-    const backG = new THREE.Group();
-    backG.position.set(-HL + SH / 2, 0, 0);
-    group.add(backG);
-    rig(backG, -0.10, 0, 0);
-    {
-      const back = kit.box(SH, HH * 2, HW * 2, steelMat);
-      backG.add(back);
-      // 品字插口（电源线插这儿）+ 开关
-      const sock = kit.box(0.070, 0.220, 0.260, kit.mat('plasticDark', { roughness: 0.75 }));
-      sock.position.set(-0.040, 0.02, -0.30);
-      backG.add(sock);
-      const sw = kit.box(0.050, 0.090, 0.070, kit.mat('plasticMid', { roughness: 0.72 }));
-      sw.position.set(-0.038, 0.02, -0.02);
-      backG.add(sw);
-      // 蜂窝状出风孔
-      const geo = new THREE.BoxGeometry(0.014, 0.030, 0.030);
-      const vent = new THREE.InstancedMesh(geo, steelMat2, 24);
-      const m4 = new THREE.Matrix4();
-      let n = 0;
-      for (let r = 0; r < 6; r++) for (let c = 0; c < 4; c++)
-        vent.setMatrixAt(n++, m4.makeTranslation(-0.014, -0.24 + r * 0.055, 0.06 + c * 0.062));
-      vent.instanceMatrix.needsUpdate = true;
-      backG.add(vent);
+    // 第一排：24pin 主供电 + 12V-2x6（16pin）
+    mkConn({ y: 0.222, z: -0.345, cols: 12, rows: 2, pitch: 0.036, hero: true });   // 24PIN
+    const c16 = mkConn({ y: 0.222, z: 0.300, cols: 6, rows: 2, pitch: 0.036, hero: true }); // 12V-2x6
+    // 12V-2x6 的 4 根 sideband 小针
+    for (let r = 0; r < 2; r++) {
+      const row = D.parts.pinRow(2, 0.020, { w: 0.008, h: 0.007, d: 0.030 }, M.gold);
+      row.rotation.y = Math.PI / 2;
+      row.position.set(HX + 0.040, -0.052 + r * 0.017, 0);
+      c16.add(row);
     }
 
-    /* ============================================================
-       2. 侧板 —— 拆解时向两侧让开，露出内部的一整条"流水线"
-       ============================================================ */
-    for (const dir of [1, -1]) {
-      const sideG = new THREE.Group();
-      sideG.position.set(0, 0, dir * (HW - SH / 2));
-      group.add(sideG);
-      rig(sideG, 0, 0.10, dir * 0.15);
-      const plate = kit.box(HL * 2, HH * 2, SH, steelMat);
-      sideG.add(plate);
-      // 侧面的冲压加强筋
-      const rib = kit.box(HL * 1.7, 0.030, SH + 0.004, steelMat2);
-      rib.position.y = 0.14;
-      sideG.add(rib);
-    }
+    // 第二排：EPS 8pin ×2 + PCIe 8pin ×2
+    mkConn({ y: 0.072, z: -0.402, cols: 4, rows: 2 });
+    mkConn({ y: 0.072, z: -0.204, cols: 4, rows: 2 });
+    mkConn({ y: 0.072, z: 0.020, cols: 4, rows: 2 });
+    mkConn({ y: 0.072, z: 0.218, cols: 4, rows: 2 });
+    // 第三排：PCIe 8pin ×2 + SATA
+    mkConn({ y: -0.078, z: -0.300, cols: 4, rows: 2 });
+    mkConn({ y: -0.078, z: -0.102, cols: 4, rows: 2 });
+    mkConn({ y: -0.078, z: 0.140, cols: 6, rows: 1, pitch: 0.015, slim: true });
+    mkConn({ y: -0.078, z: 0.300, cols: 6, rows: 1, pitch: 0.015, slim: true });
+    // 第四排：SATA ×2 + Molex ×2 + SATA ×2
+    mkConn({ y: -0.232, z: -0.455, cols: 6, rows: 1, pitch: 0.015, slim: true });
+    mkConn({ y: -0.232, z: -0.295, cols: 6, rows: 1, pitch: 0.015, slim: true });
+    mkConn({ y: -0.232, z: -0.105, cols: 4, rows: 1, pitch: 0.028, slim: true });  // Molex
+    mkConn({ y: -0.232, z: 0.130, cols: 6, rows: 1, pitch: 0.015, slim: true });
+    mkConn({ y: -0.232, z: 0.290, cols: 6, rows: 1, pitch: 0.015, slim: true });
+    mkConn({ y: -0.232, z: 0.450, cols: 4, rows: 1, pitch: 0.028, slim: true });   // Molex
+
+    // 模组面板丝印
+    const ml = (txt, y, z, w = 0.13) => labelPlane(modG, [txt], w, 0.032, [HX + 0.002, y, z],
+      { rot: [0, Math.PI / 2, 0], w: 256, h: 56, opacity: 0.60 });
+    ml('24PIN', 0.300, -0.345, 0.15);
+    ml('12V-2x6', 0.300, 0.300, 0.18);
+    ml('EPS', 0.148, -0.402, 0.075);
+    ml('EPS', 0.148, -0.204, 0.075);
+    ml('PCIe', 0.148, 0.020, 0.080);
+    ml('PCIe', 0.148, 0.218, 0.080);
+    ml('SATA', -0.318, 0.200, 0.075);
+    ml('MOLEX', -0.318, -0.105, 0.100);
+    ml('FULLY MODULAR', -0.168, 0.020, 0.24);
 
     /* ============================================================
-       3. 顶盖 + 风扇
-       电源装在机箱底部时风扇朝上，把机箱里的空气抽进来吹过所有元件。
+       2. 上盖 + 135mm 风扇
        ============================================================ */
     const topG = new THREE.Group();
-    topG.position.y = HH - SH / 2;   // = 0.34，顶盖就架在壳体上沿
-    group.add(topG);
-    rig(topG, 0, 0.38, 0);
+    content.add(topG);
 
-    {
-      // 四边框（中间留出风扇的圆孔）
-      const bars = [[HL * 2, SH, 0.10, 0, HW - 0.05], [HL * 2, SH, 0.10, 0, -HW + 0.05],
-                    [0.10, SH, HW * 2 - 0.20, HL - 0.05, 0], [0.10, SH, HW * 2 - 0.20, -HL + 0.05, 0]];
-      for (const [w, h, d, px, pz] of bars) {
-        const b = kit.box(w, h, d, steelMat);
-        b.position.set(px, 0, pz);
-        topG.add(b);
-      }
-      // 风扇外的圆形护圈
-      const ring = kit.cyl(0.46, 0.46, SH + 0.006, 24, steelMat, true);
-      topG.add(ring);
-      // 四角螺丝
-      for (const [px, pz] of [[0.44, 0.44], [0.44, -0.44], [-0.44, 0.44], [-0.44, -0.44]]) {
-        const sc = kit.cyl(0.022, 0.022, SH + 0.014, 8, kit.mats.metal);
-        sc.position.set(px, 0, pz);
-        topG.add(sc);
-      }
-    }
-
-    /* ---------- 风扇（轴向抽风，绕 y 轴转） ---------- */
-    const fanGroup = new THREE.Group();
-    fanGroup.position.y = HH - 0.09;
-    group.add(fanGroup);
-    rig(fanGroup, 0, 0.38, 0);
-    let blades;
-    {
-      const hubMat = kit.mat('plasticDark', { roughness: 0.72, metalness: 0.04 });
-      const hub = kit.cyl(0.085, 0.085, 0.075, 16, hubMat);
-      fanGroup.add(hub);
-      // 中心轴标
-      const cap = kit.cyl(0.045, 0.045, 0.012, 12, kit.mats.metal);
-      cap.position.y = 0.042;
-      fanGroup.add(cap);
-
-      // 7 片扇叶，每片是一块带扭转的薄板 —— 转动时就靠这个倾角推空气
-      blades = new THREE.Group();
-      fanGroup.add(blades);
-      const bladeMat = kit.mat('plastic', { roughness: 0.70, metalness: 0.03, color: 0x565d64 });
-      for (let i = 0; i < 7; i++) {
-        const b = kit.box(0.300, 0.010, 0.130, bladeMat);
-        const a = (i / 7) * Math.PI * 2;
-        b.position.set(Math.cos(a) * 0.235, 0.012, Math.sin(a) * 0.235);
-        b.rotation.y = -a;
-        b.rotation.z = 0.42;      // 叶片倾角
-        blades.add(b);
-      }
-      // 让每片叶子都贴着轮毂连出去：加一圈连杆
-      for (let i = 0; i < 7; i++) {
-        const a = (i / 7) * Math.PI * 2;
-        const arm = kit.box(0.120, 0.014, 0.055, hubMat);
-        arm.position.set(Math.cos(a) * 0.13, 0.010, Math.sin(a) * 0.13);
-        arm.rotation.y = -a;
-        blades.add(arm);
-      }
-    }
-
-    /* ============================================================
-       4. 内部：一整条能量流水线，从左（AC）到右（DC）
-       每个子系统是一个 Group，拆解时沿 x 向外摊开成一条线。
-       ============================================================ */
-    const chain = [];   // 摊开用：{g, baseX}
-
-    const link = (g, x) => {
-      g.position.set(x, -HH + SH, 0);
-      g.userData.baseX = x;
-      chain.push(g);
-      return g;
+    // 外框四边
+    const rail = (w, d, x, z) => {
+      put(topG, D.parts.cbox(w, 0.020, d, M.steel, 0.004, 0.008), x, HY - 0.010, z);
     };
+    rail(1.16, 0.050, 0, 0.586);
+    rail(1.16, 0.050, 0, -0.586);
+    rail(0.050, 1.162, 0.585, 0);
+    rail(0.050, 1.162, -0.585, 0);
+    // 四角加强角块
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      put(topG, kit.box(0.10, 0.018, 0.10, M.steelDark), sx * 0.545, HY - 0.026, sz * 0.545);
+    }
+    // 风扇圆环 + 连接桥
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.500, 0.030, 6, 44), M.steelDark);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = HY - 0.032;
+    topG.add(ring);
+    for (const s of [-1, 1]) {
+      put(topG, D.parts.cbox(0.13, 0.016, 0.048, M.steelDark, 0.003, 0.006), 0, HY - 0.012, s * 0.545);
+      put(topG, D.parts.cbox(0.048, 0.016, 0.13, M.steelDark, 0.003, 0.006), s * 0.545, HY - 0.012, 0);
+    }
+    // 冲压蜂窝网（alphaMap）
+    const grille = new THREE.Mesh(new THREE.CircleGeometry(0.492, 44), meshFan);
+    grille.rotation.x = -Math.PI / 2;
+    grille.position.y = HY + 0.001;
+    topG.add(grille);
+    // 上盖四颗螺丝（与盖面齐平，避免顶出 Y 包围盒）
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      screwAt(topG, sx * 0.545, HY - 0.004, sz * 0.545, 'y', 0.016, 0.008);
+    }
+    // 上盖小铭牌
+    labelPlane(topG, ['135mm FAN · ATX 3.1'], 0.26, 0.034, [-0.30, HY + 0.003, 0.583],
+      { rot: [-Math.PI / 2, 0, 0], w: 384, h: 56, opacity: 0.55 });
 
-    // 内部底板（电路板本体）
-    const pcb = kit.box(1.02, 0.014, 1.08, kit.mats.pcb);
-    pcb.position.set(0, -HH + SH + 0.007, 0);
-    group.add(pcb);
-    rig(pcb, 0, 0, 0);
+    // 风扇（135mm ≈ 0.47 半径；11 叶，转子单独转）
+    const fanAsm = D.parts.fan({
+      r: 0.470, blades: 11, hubR: 0.088, thick: 0.046,
+      frameMat: M.fanFrame, bladeMat: M.blade,
+    });
+    fanAsm.group.position.y = HY - 0.075;
+    topG.add(fanAsm.group);
+    // 风扇线束
+    const fanWire = kit.trace([
+      [0.06, HY - 0.085, 0.30], [0.16, HY - 0.10, 0.40], [0.24, HY - 0.14, 0.46], [0.26, Y_TOP + 0.02, 0.42],
+    ], 0.007, M.sleeve, 20);
+    topG.add(fanWire);
 
-    /* ---------- 4.1 EMI 滤波：把插座进来的杂波挡住 ---------- */
+    /* ============================================================
+       3. 主 PCB 与内部元件（按 AC→DC 顺序分组成 rig）
+       ============================================================ */
+    const pcbG = new THREE.Group();
+    content.add(pcbG);
+
+    // 主 PCB
+    put(pcbG, D.parts.cbox(1.06, 0.018, 1.12, M.pcb, 0.003, 0.005), 0.02, Y_PCB, 0);
+    // 四角铜柱 + 固定螺丝
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      put(pcbG, kit.cyl(0.026, 0.026, 0.042, 10, M.copper), 0.46 * sx, -0.312, 0.48 * sz);
+      screwAt(pcbG, 0.46 * sx, Y_PCB + 0.014, 0.48 * sz, 'y', 0.013, 0.006);
+    }
+    // 贴片元件阵列（一片铺开，便宜）
+    const smd = D.parts.smdField(210, { w: 0.014, h: 0.009, d: 0.009 }, M.ceramic);
+    pcbG.add(smd);
+    smd.userData.fill(-0.52, 0.50, -0.54, 0.54, Y_TOP + 0.004, 0x71b);
+
+    // 3.1 EMI 滤波（最靠近 AC 进线）
     const emiG = new THREE.Group();
-    group.add(emiG);
-    link(emiG, -0.44);
-    {
-      const y0 = 0.020;   // 相对内部底板
-      const coilMat = kit.mats.copper;
-      const coreMat = kit.mat('plasticDark', { roughness: 0.80, metalness: 0.05 });
-      for (const z of [0.18, -0.18]) {
-        const core = kit.cyl(0.070, 0.070, 0.048, 16, coreMat);
-        core.position.set(0, y0 + 0.024, z);
-        emiG.add(core);
-        // 绕在磁环上的铜线：用一圈细管表示
-        const w = kit.cyl(0.078, 0.078, 0.040, 20, coilMat, true);
-        w.position.set(0, y0 + 0.024, z);
-        emiG.add(w);
-      }
-      // X 电容 / 共模电感那一排小黑块
-      for (let i = 0; i < 3; i++) {
-        const c = kit.box(0.075, 0.045, 0.035, kit.mats.ceramic);
-        c.position.set(0.03, y0 + 0.022, -0.05 + i * 0.075);
-        emiG.add(c);
-      }
+    pcbG.add(emiG);
+    rig(emiG, 0.35, 1.0, [-0.030, 0.090, 0]);
+    put(emiG, D.parts.cbox(0.14, 0.100, 0.34, M.steelDark, 0.004, 0.008), -0.470, -0.225, 0.02);
+    for (const z of [-0.10, 0.12]) {
+      const choke = new THREE.Mesh(new THREE.TorusGeometry(0.046, 0.020, 6, 16), M.enamel);
+      choke.rotation.x = Math.PI / 2;
+      choke.position.set(-0.470, Y_TOP + 0.020, z);
+      emiG.add(choke);
+      put(emiG, kit.cyl(0.020, 0.020, 0.026, 10, M.ferrite), -0.470, Y_TOP + 0.006, z);
     }
+    // X 电容 / Y 电容 / 保险丝 / MOV
+    for (const z of [-0.055, 0.065]) {
+      put(emiG, kit.box(0.032, 0.030, 0.014, M.ceramic), -0.512, Y_TOP + 0.015, z);
+    }
+    put(emiG, kit.cyl(0.012, 0.012, 0.052, 8, M.ceramic), -0.512, Y_TOP + 0.026, -0.16).rotation.z = Math.PI / 2;
+    put(emiG, kit.cyl(0.012, 0.012, 0.030, 8, M.label), -0.520, Y_TOP + 0.026, 0.18);
+    put(emiG, kit.cyl(0.020, 0.020, 0.010, 10, M.ceramic), -0.500, Y_TOP + 0.005, 0.19);
 
-    /* ---------- 4.2 整流桥：交流 → 脉动直流 ---------- */
+    // 3.2 整流桥 + 独立小散热片
     const rectG = new THREE.Group();
-    group.add(rectG);
-    link(rectG, -0.30);
-    {
-      const body = kit.box(0.100, 0.075, 0.150, steelMat3);
-      body.position.set(0, 0.055, 0.10);
-      rectG.add(body);
-      // 四只脚
-      for (let i = 0; i < 4; i++) {
-        const leg = kit.box(0.014, 0.045, 0.012, kit.mats.gold);
-        leg.position.set((i % 2 ? 0.026 : -0.026), 0.022, 0.10 + (i < 2 ? 0.035 : -0.035));
-        rectG.add(leg);
-      }
-      // 旁边一片小散热片：放在靠 +z 的一侧，
-      // 让开后面那只大电容的直径（电容很粗，挤不得）
-      const hs = kit.box(0.030, 0.090, 0.170, steelMat3);
-      hs.position.set(0.085, 0.065, 0.10);
-      rectG.add(hs);
+    pcbG.add(rectG);
+    rig(rectG, 0.35, 1.0, [-0.010, 0.115, 0]);
+    put(rectG, D.parts.cbox(0.085, 0.050, 0.095, M.black, 0.003, 0.005), -0.360, Y_TOP + 0.025, -0.165);
+    for (const dz of [-0.02, 0.02]) {
+      put(rectG, kit.box(0.075, 0.006, 0.006, M.gold), -0.360, Y_TOP + 0.003, -0.165 + dz);
     }
+    const rectFin = D.parts.finStack({ count: 14, spanX: 0.17, y: 0, h: 0.150, zLen: 0.170, thick: 0.006 }, M.alu);
+    rectFin.position.set(-0.360, Y_TOP + 0.095, -0.165);
+    rectG.add(rectFin);
+    put(rectG, D.parts.cbox(0.175, 0.020, 0.175, M.alu, 0.003, 0.005), -0.360, Y_TOP + 0.020, -0.165);
 
-    /* ---------- 4.3 主电容：把脉动直流先"抹平"一次 ---------- */
+    // 3.3 PFC 电感 + 升压管散热片
+    const pfcG = new THREE.Group();
+    pcbG.add(pfcG);
+    rig(pfcG, 0.40, 1.0, [0.010, 0.140, 0]);
+    put(pfcG, D.parts.cbox(0.165, 0.030, 0.165, M.ceramic, 0.003, 0.006), -0.220, Y_TOP + 0.015, 0.170);
+    const pfcCoil = new THREE.Mesh(new THREE.TorusGeometry(0.072, 0.028, 8, 22), M.enamel);
+    pfcCoil.rotation.x = Math.PI / 2;
+    pfcCoil.position.set(-0.220, Y_TOP + 0.060, 0.170);
+    pfcG.add(pfcCoil);
+    put(pfcG, kit.cyl(0.050, 0.050, 0.040, 12, M.ferrite), -0.220, Y_TOP + 0.040, 0.170);
+    const pfcFin = D.parts.finStack({ count: 16, spanX: 0.19, y: 0, h: 0.150, zLen: 0.180, thick: 0.006 }, M.alu);
+    pfcFin.position.set(-0.220, Y_TOP + 0.090, -0.140);
+    pfcG.add(pfcFin);
+    put(pfcG, D.parts.cbox(0.195, 0.020, 0.185, M.alu, 0.003, 0.005), -0.220, Y_TOP + 0.012, -0.140);
+
+    // 3.4 两颗大电解电容（主动 PFC 的储能罐）
     const bulkG = new THREE.Group();
-    group.add(bulkG);
-    link(bulkG, -0.28);   // 往左让开变压器的线包：这只电容直径最大，最容易撞
-    {
-      const body = kit.cyl(0.078, 0.078, 0.300, 20, kit.mat('plasticDark', { roughness: 0.70, color: 0x39404a }));
-      body.position.set(0, 0.168, -0.10);
-      bulkG.add(body);
-      // 电容顶部的泄压纹 + 正极
-      const top = kit.cyl(0.070, 0.078, 0.018, 20, steelMat3);
-      top.position.set(0, 0.326, -0.10);
-      bulkG.add(top);
-      const sleeve = kit.cyl(0.080, 0.080, 0.055, 20, kit.mat('plasticDark', { roughness: 0.62, color: 0x6d5f52 }), true);
-      sleeve.position.set(0, 0.150, -0.10);
-      bulkG.add(sleeve);
-      // 第二只小一点的（往 +z 错开，别跟大电容叠在一起）
-      const b2 = kit.cyl(0.055, 0.055, 0.170, 14, kit.mat('plasticDark', { roughness: 0.70, color: 0x39404a }));
-      b2.position.set(0, 0.105, 0.30);
-      bulkG.add(b2);
+    pcbG.add(bulkG);
+    rig(bulkG, 0.40, 1.0, [0.020, 0.165, 0]);
+    for (const z of [-0.175, 0.175]) {
+      const g = new THREE.Group();
+      g.position.set(-0.045, Y_TOP, z);
+      bulkG.add(g);
+      // 套管（略大的圆柱）+ 底部橡胶座 + 顶部铝盖
+      put(g, kit.cyl(0.088, 0.088, 0.250, 16, M.capSkin), 0, 0.128, 0);
+      put(g, kit.cyl(0.090, 0.090, 0.020, 16, M.rubber), 0, 0.010, 0);
+      put(g, kit.cyl(0.082, 0.082, 0.022, 16, M.alu), 0, 0.262, 0);
+      // 顶部十字防爆纹
+      put(g, kit.box(0.086, 0.004, 0.008, M.steelDark), 0, 0.274, 0);
+      put(g, kit.box(0.008, 0.004, 0.086, M.steelDark), 0, 0.274, 0);
+      // 侧面白色标识条 + 丝印
+      put(g, kit.box(0.010, 0.170, 0.004, M.label), 0.074, 0.130, 0.048).rotation.y = 0.55;
+      labelPlane(g, ['PFC 470µF', '105°C'], 0.10, 0.05, [0, 0.150, 0.090],
+        { rot: [0, 0, 0], w: 192, h: 64, opacity: 0.5 });
+      // 底部引脚
+      for (const dz of [-0.03, 0.03]) {
+        put(g, kit.box(0.008, 0.026, 0.008, M.gold), -0.028, -0.006, dz);
+      }
     }
 
-    /* ---------- 4.4 高频变压器：整台电源的心脏 ----------
-       初级这边是高压高频方波，次级那边匝数少，感应出来的就是低压大电流。 */
+    // 3.5 主变压器 + 铜带屏蔽
     const xfmrG = new THREE.Group();
-    group.add(xfmrG);
-    link(xfmrG, 0.03);
-    {
-      const coreMat = kit.mat('plasticDark', { roughness: 0.82, metalness: 0.08, color: 0x353a41 });
-      // EE 型铁氧体磁芯：上下两块 + 中间的中柱
-      const top = kit.box(0.300, 0.075, 0.270, coreMat);
-      top.position.set(0, 0.235, 0);
-      xfmrG.add(top);
-      const bot = kit.box(0.300, 0.075, 0.270, coreMat);
-      bot.position.set(0, 0.075, 0);
-      xfmrG.add(bot);
-      const mid = kit.box(0.085, 0.090, 0.270, coreMat);
-      mid.position.set(0, 0.152, 0);
-      xfmrG.add(mid);
-      // 初级/次级线包：两只铜色线轴
-      const w1 = kit.cyl(0.098, 0.098, 0.150, 16, kit.mats.copper);
-      w1.position.set(-0.02, 0.152, -0.115);
-      xfmrG.add(w1);
-      const w2 = kit.cyl(0.086, 0.086, 0.150, 16, kit.mats.copper);
-      w2.position.set(-0.02, 0.152, 0.115);
-      xfmrG.add(w2);
-      // 包在外面的绝缘胶带
-      const tape = kit.box(0.215, 0.105, 0.290, kit.mats.ceramic);
-      tape.position.set(-0.075, 0.152, 0);
-      xfmrG.add(tape);
+    pcbG.add(xfmrG);
+    rig(xfmrG, 0.45, 1.0, [0.030, 0.190, 0]);
+    put(xfmrG, D.parts.cbox(0.175, 0.190, 0.195, M.ferrite, 0.004, 0.010), 0.100, Y_TOP + 0.095, 0);
+    put(xfmrG, kit.box(0.150, 0.115, 0.205, M.enamel), 0.100, Y_TOP + 0.090, 0);
+    for (let i = 0; i < 3; i++) {
+      put(xfmrG, kit.box(0.156, 0.008, 0.208, M.copper), 0.100, Y_TOP + 0.055 + i * 0.032, 0);
+    }
+    put(xfmrG, kit.box(0.180, 0.028, 0.200, M.tape), 0.100, Y_TOP + 0.168, 0);
+    put(xfmrG, kit.box(0.058, 0.045, 0.195, M.copper), 0.100, Y_TOP + 0.090, 0.0);
+    labelPlane(xfmrG, ['MAIN XFMR'], 0.11, 0.030, [0.100, Y_TOP + 0.186, 0.060],
+      { rot: [-Math.PI / 2, 0, 0], w: 192, h: 48, opacity: 0.5 });
+    for (const dz of [-0.055, -0.020, 0.020, 0.055]) {
+      put(xfmrG, kit.box(0.006, 0.022, 0.006, M.gold), 0.060, Y_TOP + 0.003, dz);
     }
 
-    /* ---------- 4.5 二次侧：再整流一次 + 输出电感 ---------- */
+    // 3.6 同步整流：散热片 + MOSFET + 输出电感 + 固态电容
     const secG = new THREE.Group();
-    group.add(secG);
-    link(secG, 0.27);
-    {
-      const hsMat = steelMat3;
-      for (const z of [0.16, -0.16]) {
-        const base = kit.box(0.075, 0.020, 0.240, hsMat);
-        base.position.set(0, 0.105, z);
-        secG.add(base);
-        const geo = new THREE.BoxGeometry(0.016, 0.075, 0.230);
-        const inst = new THREE.InstancedMesh(geo, hsMat, 5);
-        const m4 = new THREE.Matrix4();
-        for (let i = 0; i < 5; i++) inst.setMatrixAt(i, m4.makeTranslation(-0.026 + i * 0.013, 0.152, z));
-        inst.instanceMatrix.needsUpdate = true;
-        inst.castShadow = true;
-        secG.add(inst);
-      }
-      // 输出储能电感：两只立式磁环
-      for (const z of [0.02, -0.02]) {
-        const ind = kit.cyl(0.055, 0.055, 0.070, 14, kit.mat('plasticDark', { roughness: 0.78, color: 0x3d434b }));
-        // 立在两排散热片之间的空档里：左边是变压器磁芯、右边是电容排
-        ind.position.set(-0.01, 0.055, z * 6);
-        secG.add(ind);
-      }
+    pcbG.add(secG);
+    rig(secG, 0.50, 1.0, [0.040, 0.150, 0]);
+    const secFin = D.parts.finStack({ count: 20, spanX: 0.22, y: 0, h: 0.150, zLen: 0.200, thick: 0.005 }, M.alu);
+    secFin.position.set(0.255, Y_TOP + 0.085, -0.215);
+    secG.add(secFin);
+    put(secG, D.parts.cbox(0.225, 0.018, 0.205, M.alu, 0.003, 0.005), 0.255, Y_TOP + 0.012, -0.215);
+    for (let i = 0; i < 4; i++) {
+      put(secG, kit.box(0.030, 0.012, 0.026, M.black), 0.255, Y_TOP + 0.020, -0.150 + i * 0.055);
+    }
+    for (let i = 0; i < 4; i++) {
+      const ind = D.parts.inductor(0.052, 0.042, 0.052);
+      ind.position.set(0.290 + (i % 2) * 0.070, Y_TOP + 0.021, -0.020 + Math.floor(i / 2) * 0.070);
+      secG.add(ind);
+    }
+    for (let i = 0; i < 5; i++) {
+      const cap = D.parts.capacitor(0.030, 0.085, 0x2c3b4d);
+      cap.position.set(0.370 + (i % 3) * 0.045, Y_TOP + 0.043, 0.130 + Math.floor(i / 3) * 0.055);
+      secG.add(cap);
+    }
+    // 铜排（把大电流送到模组板）
+    for (let i = 0; i < 3; i++) {
+      put(secG, kit.box(0.155, 0.010, 0.040, M.copper), 0.425, Y_TOP + 0.030 + i * 0.015, -0.030 + i * 0.040);
     }
 
-    /* ---------- 4.6 输出滤波电容组：最后一道"抹平" ----------
-       这一排电容的呼吸 = 它们在反复充电、放电，把脉动抹成平稳的直流。 */
-    const capG = new THREE.Group();
-    group.add(capG);
-    link(capG, 0.42);
-    let capGlowMat;
-    {
-      const n = 10;
-      const bodyMat = kit.mat('plasticDark', { roughness: 0.70, color: 0x3a414b });
-      const geo = new THREE.CylinderGeometry(0.042, 0.042, 0.175, 12);
-      const inst = new THREE.InstancedMesh(geo, bodyMat, n);
-      const m4 = new THREE.Matrix4();
-      for (let i = 0; i < n; i++) inst.setMatrixAt(i, m4.makeTranslation((i % 2) * 0.09 - 0.045, 0.088, (i - (n - 1) / 2) * 0.105));
-      inst.instanceMatrix.needsUpdate = true;
-      inst.castShadow = true;
-      capG.add(inst);
-      // 顶部的银色正极
-      const geo2 = new THREE.CylinderGeometry(0.036, 0.042, 0.014, 12);
-      const tops = new THREE.InstancedMesh(geo2, steelMat3, n);
-      for (let i = 0; i < n; i++) tops.setMatrixAt(i, m4.makeTranslation((i % 2) * 0.09 - 0.045, 0.180, (i - (n - 1) / 2) * 0.105));
-      tops.instanceMatrix.needsUpdate = true;
-      capG.add(tops);
-
-      // "电量条"：一排会呼吸的发光点（clone 一份 kit 材质，才能单独改亮度）
-      capGlowMat = kit.glow(hue, 1.0).clone();
-      const bar = new THREE.InstancedMesh(new THREE.BoxGeometry(0.014, 0.014, 0.086), capGlowMat, n);
-      for (let i = 0; i < n; i++) bar.setMatrixAt(i, m4.makeTranslation((i % 2) * 0.09 - 0.045, 0.20, (i - (n - 1) / 2) * 0.105));
-      bar.instanceMatrix.needsUpdate = true;
-      capG.add(bar);
+    // 3.7 输出端：固态电容组 + 磁珠 + 母板连接
+    const outG = new THREE.Group();
+    pcbG.add(outG);
+    rig(outG, 0.55, 1.0, [0.050, 0.120, 0]);
+    for (let i = 0; i < 6; i++) {
+      const cap = D.parts.capacitor(0.028, 0.070, 0x33405a);
+      cap.position.set(0.470, Y_TOP + 0.036, -0.330 + i * 0.130);
+      outG.add(cap);
     }
+    for (let i = 0; i < 4; i++) {
+      const m = new THREE.Mesh(new THREE.TorusGeometry(0.030, 0.012, 6, 14), M.enamel);
+      m.rotation.x = Math.PI / 2;
+      m.position.set(0.445, Y_TOP + 0.030, -0.130 + i * 0.085);
+      outG.add(m);
+    }
+    // 垂直模组母板
+    put(pcbG, D.parts.cbox(0.020, 0.620, 1.120, M.pcbDark, 0.003, 0.005), 0.545, -0.020, 0);
+    for (let i = 0; i < 5; i++) {
+      put(outG, kit.box(0.070, 0.010, 0.055, M.copper), 0.490, Y_TOP + 0.024 + i * 0.012, -0.360 + i * 0.170);
+    }
+    // 模组母板上的电感/电容（从开口能看到）
+    for (let i = 0; i < 6; i++) {
+      const cap = D.parts.capacitor(0.026, 0.060, 0x2b3a4e);
+      cap.position.set(0.525, -0.240 + i * 0.085, 0.410);
+      outG.add(cap);
+    }
+    // 输出状态灯（呼吸）
+    const ledMatA = M.ledCold.clone();
+    const ledMatB = M.ledWarm.clone();
+    put(pcbG, kit.box(0.012, 0.010, 0.008, ledMatA), 0.505, -0.130, -0.300);
+    put(pcbG, kit.box(0.012, 0.010, 0.008, ledMatB), 0.505, -0.130, -0.270);
+    put(pcbG, kit.cyl(0.014, 0.014, 0.012, 8, M.conn), 0.505, -0.145, -0.285);
 
-    /* ---------- 4.7 模组输出口：要哪路线就插哪路 ---------- */
-    const modG = new THREE.Group();
-    group.add(modG);
-    link(modG, 0.545);
-    {
-      const panel = kit.box(0.030, 0.560, 1.000, steelMat2);
-      panel.position.set(0.10, 0.28, 0);
-      modG.add(panel);
-      const sokMat = kit.mat('plasticDark', { roughness: 0.74 });
-      const socMat = kit.mat('plasticMid', { roughness: 0.72 });
-      const geo = new THREE.BoxGeometry(0.055, 0.150, 0.115);
-      const inst = new THREE.InstancedMesh(geo, sokMat, 6);
-      const m4 = new THREE.Matrix4();
-      let n = 0;
-      for (let r = 0; r < 2; r++) for (let c = 0; c < 3; c++)
-        inst.setMatrixAt(n++, m4.makeTranslation(0.075, 0.145 + r * 0.185, (c - 1) * 0.285));
-      inst.instanceMatrix.needsUpdate = true;
-      inst.castShadow = true;
-      modG.add(inst);
-      // 每个口里的金针
-      const pinGeo = new THREE.BoxGeometry(0.020, 0.012, 0.012);
-      const pins = new THREE.InstancedMesh(pinGeo, kit.mats.gold, 6 * 8);
-      let p = 0;
-      for (let r = 0; r < 2; r++) for (let c = 0; c < 3; c++)
-        for (let i = 0; i < 8; i++)
-          pins.setMatrixAt(p++, m4.makeTranslation(0.050, 0.100 + r * 0.185 + (i % 4) * 0.028, (c - 1) * 0.285 + (i < 4 ? -0.024 : 0.024)));
-      pins.instanceMatrix.needsUpdate = true;
-      modG.add(pins);
-      const label = kit.dot(0.115, 0.50, -0.42, kit.glow(hue, 1.6), 0.018);
-      modG.add(label);
+    // 内部线束：PCB ↔ 模组母板
+    const harness = [
+      [[0.30, Y_TOP + 0.02, 0.300], [0.42, -0.130, 0.360], [0.510, -0.090, 0.360]],
+      [[0.18, Y_TOP + 0.02, 0.420], [0.36, -0.180, 0.440], [0.505, -0.220, 0.430]],
+      [[0.16, Y_TOP + 0.02, -0.470], [0.40, -0.150, -0.480], [0.505, -0.120, -0.450]],
+    ];
+    for (const pts of harness) pcbG.add(kit.trace(pts, 0.009, M.sleeveBlue, 22));
+
+    /* ============================================================
+       4. 模组线束（从接口往外走一小段就出画面，不越出机箱）
+       ============================================================ */
+    const cables = new THREE.Group();
+    content.add(cables);
+    const cableRun = (pts, r) => cables.add(kit.trace(pts, r, M.sleeve, 22));
+    cableRun([[0.655, 0.222, -0.345], [0.678, 0.205, -0.300], [0.690, 0.100, -0.240], [0.660, -0.020, -0.180]], 0.024);
+    for (const dy of [-0.020, 0, 0.020]) {
+      cableRun([[0.655, 0.222 + dy, 0.300], [0.678, 0.190 + dy, 0.300], [0.688, 0.060 + dy, 0.270], [0.660, -0.080 + dy, 0.220]], 0.011);
+    }
+    cableRun([[0.655, 0.072, -0.402], [0.676, 0.030, -0.430], [0.672, -0.090, -0.430], [0.646, -0.190, -0.400]], 0.019);
+    cableRun([[0.655, 0.072, 0.218], [0.674, 0.020, 0.250], [0.670, -0.110, 0.250], [0.646, -0.200, 0.220]], 0.019);
+    // 理线魔术贴
+    for (const z of [-0.215, 0.235]) {
+      put(cables, kit.box(0.035, 0.020, 0.052, M.sleeveBlue), 0.686, 0.095, z);
     }
 
     /* ============================================================
-       5. 能量流：从 AC 口一路走到模组输出口
-       航点绑在"会动的子系统"上，所以拆解摊开后，光流依然一个部件一个部件地穿过去。
+       5. 能量流（AC → EMI → 整流 → PFC → 电解 → 变压器 → 整流 → 输出）
        ============================================================ */
-    const flowMat = kit.glow(0xd8b48a, 2.0);
-    const flowMat2 = kit.glow(hue, 1.6).clone();   // 直流侧：换成元件标识色
-    const flows = [];
-    const nod = (g, y, z) => ({ g, off: new THREE.Vector3(0, y, z) });
-    const lane = [
-      { g: backG, off: new THREE.Vector3(-0.02, 0.02, -0.30) },
-      nod(emiG, 0.05, -0.18),
-      nod(rectG, 0.06, 0.10),
-      nod(bulkG, 0.32, -0.10),
-      nod(xfmrG, 0.15, 0.05),
-      nod(secG, 0.14, 0.02),
-      nod(capG, 0.16, 0.05),
-      nod(modG, 0.22, -0.28),
+    const lanePts = [
+      [-0.600, 0.175, 0.335], [-0.540, 0.090, 0.260], [-0.480, -0.150, 0.120],
+      [-0.400, -0.230, 0.020], [-0.300, -0.230, -0.060], [-0.200, -0.220, 0.060],
+      [-0.070, -0.190, 0.140], [0.040, -0.170, 0.030], [0.130, -0.170, -0.030],
+      [0.250, -0.190, -0.120], [0.360, -0.220, 0.000], [0.470, -0.190, 0.020],
+      [0.545, -0.070, 0.000],
     ];
-    for (let i = 0; i < 9; i++) {
-      const m = i < 4 ? flowMat.clone() : flowMat2.clone();
-      const d = new THREE.Mesh(new THREE.SphereGeometry(0.019, 8, 6), m);
-      d.userData.t = (i / 9) % 1;
-      d.userData.k = 0.85 + (i % 3) * 0.15;
-      d.userData.mat = m;
-      group.add(d);
+    const lane = kit.trace(lanePts, 0.0055, kit.mat('gold', {
+      transparent: true, opacity: 0.24, roughness: 0.35, metalness: 0.4,
+    }), 64);
+    content.add(lane);
+
+    const flows = [];
+    const dotMats = [];
+    for (let i = 0; i < 12; i++) {
+      const mat = kit.glow(i % 3 === 0 ? 0xe8a86b : 0x9fd2e6, 1.0).clone();
+      dotMats.push(mat);
+      const d = kit.dot(0, 0, 0, mat, 0.016);
+      d.userData.phase = i / 12;
+      d.userData.k = i;
+      content.add(d);
       flows.push(d);
     }
 
-    /* ---------- 采样：把 lane 上的 u∈[0,1] 换成当前实际位置 ---------- */
-    const _p = new THREE.Vector3();
-    const _a = new THREE.Vector3();
-    const _b = new THREE.Vector3();
-    function sampleLane(u) {
-      const s = kit.clamp01(u) * (lane.length - 1);
-      const i = Math.min(Math.floor(s), lane.length - 2);
-      const f = s - i;
-      _a.copy(lane[i].g.position).add(lane[i].off);
-      _b.copy(lane[i + 1].g.position).add(lane[i + 1].off);
-      return _p.copy(_a).lerp(_b, f);
-    }
-
-    /* ============================================================
-       原点归位：整体平移到包围盒中心（契约 §1.5）
-       只挪最外层容器，各子系统的 userData.base 不受影响。
-       ============================================================ */
-    {
-      const c = new THREE.Box3().setFromObject(group).getCenter(new THREE.Vector3());
-      if (c.lengthSq() > 1e-10) {
-        const inner = new THREE.Group();
-        inner.position.copy(c).negate();
-        for (const child of [...group.children]) inner.add(child);
-        group.add(inner);
-      }
-    }
+    /* ---------- 整体居中：让电源原点落在包围盒中心 ---------- */
+    const bb = new THREE.Box3().setFromObject(content);
+    const c = bb.getCenter(new THREE.Vector3());
+    content.position.set(-c.x, -c.y, -c.z);
 
     /* ============================================================
        拆解 / 动画
        ============================================================ */
+    let explodeT = 0;
+    const rotors = [fanAsm.rotor];
+
     return {
       group,
       legend: [
-        { text: 'EMI 滤波', desc: '挡住插座进来的杂波，也挡住自己发出的干扰' },
-        { text: '整流与变压器', desc: '先把交流整成直流，再切成高频降到低压' },
-        { text: '电容组', desc: '把脉动的电流抹平，输出才平稳' },
-        { text: '模组输出口', desc: '用哪路插哪路，机箱里少一堆废线' },
+        { text: 'EMI 滤波', desc: '交流电一进来先过电感与电容，把电网里的杂波挡在机器外面' },
+        { text: '整流 + 主动 PFC', desc: '交流整成直流，再升压并校正功率因数，让电流波形跟电压同相' },
+        { text: '大电解电容', desc: '两只储能罐把整流后的直流抹平，是"电"的蓄水池' },
+        { text: '12V-2x6 接口', desc: '16 针新标准，12 根供电针长 4.45mm，比老 12VHPWR 插得更稳' },
+        { text: '全模组输出', desc: '24pin / EPS / PCIe / SATA / Molex 按需插，多余的线不用塞进机箱' },
       ],
 
-      /** t: 0 = 合拢，1 = 完全拆解。纯函数，可来回擦洗 */
       setExplode(t) {
-        const e = kit.easeInOut(t);
-
-        // 顶盖 + 风扇：整体掀起
+        explodeT = t;
+        // 上盖先抬（罩住的东西最多）
+        const et = kit.easeInOut(kit.clamp01(t / 0.45));
+        topG.position.set(0, 0.24 * et, 0);
+        // 两侧板外张
+        const es = kit.easeInOut(kit.clamp01((t - 0.05) / 0.50));
+        for (const s of sideRigs) s.g.position.z = s.z * es;
+        // 后面板 / 模组面板让位
+        const eb = kit.easeInOut(kit.clamp01((t - 0.10) / 0.50));
+        backG.position.x = -0.12 * eb;
+        modG.position.x = 0.14 * eb;
+        // 内部级联：各自窗口，位置 = 基准 + 偏移·进度（纯函数，可逆）
         for (const r of rigs) {
-          const b = r.g.userData.base, d = r.d;
-          r.g.position.set(b.x + d.x * e, b.y + d.y * e, b.z + d.z * e);
+          const p = kit.easeInOut(kit.clamp01((t - r.t0) / (r.t1 - r.t0)));
+          r.obj.position.set(r.off.x * p, r.off.y * p, r.off.z * p);
         }
-
-        // 内部流水线：各组沿 x 向外摊开（越靠边的走得越远），像把内部摊在桌面上
-        // 摊开系数 0.32（原 0.40）：模组口和 EMI 滤波是两端最外的部件，0.40 会把
-        // 拆解态撑到 1.63×1.09×1.52，超过 1.6 的尺寸上限；0.32 让相邻级的间距仍清晰可辨。
-        for (const g of chain) g.position.x = g.userData.baseX * (1 + 0.32 * e);
       },
 
-      /** 持续动画：能量流 + 电容组呼吸 */
       update(elapsed, dt, emphasis = 0) {
-        const spd = 0.20 + emphasis * 0.26;
-        for (const f of flows) {
-          f.userData.t = (f.userData.t + dt * spd * f.userData.k) % 1;
-          f.position.copy(sampleLane(f.userData.t));
-          // 越靠后（越接近输出端）越亮，颜色也从"暖"过渡到元件标识色
-          const u = Math.min(f.userData.t, 1);
-          const edge = Math.min(u, 1 - u);
-          f.visible = edge > 0.03;
-          f.userData.mat.emissiveIntensity = 1.0 + u * 0.8 + emphasis * 0.6;
+        const tt = Number.isFinite(elapsed) ? elapsed : 0;
+        const em = Number.isFinite(emphasis) ? emphasis : 0;
+        // 能量流：位置由 elapsed 直接算出（不累加，不会漂）
+        const speed = 0.20 * (0.8 + em * 1.2);
+        for (const d of flows) {
+          const u = (tt * speed + d.userData.phase) % 1;
+          const p = lane.userData.curve.getPointAt(u);
+          d.position.set(p.x, p.y, p.z);
+          d.material.emissiveIntensity = 0.75 + 0.55 * Math.sin((u + tt * 0.3) * Math.PI * 2);
+          d.visible = explodeT < 0.55;
         }
-
-        // 电容组缓慢充放电：0.55Hz 的呼吸，选中时更明显
-        const breath = 0.5 + 0.5 * Math.sin(elapsed * 3.4);
-        capGlowMat.emissiveIntensity = 0.35 + breath * (0.55 + emphasis * 0.9);
+        // 风扇
+        for (const r of rotors) r.rotation.y = tt * (2.4 + em * 2.6);
+        // 输出指示灯呼吸
+        ledMatA.emissiveIntensity = 0.55 + 0.45 * Math.sin(tt * 1.6);
+        ledMatB.emissiveIntensity = 0.45 + 0.40 * Math.sin(tt * 1.6 + 1.9);
+        // 大电解顶部微光（表示"带电"）
+        if (dotMats.length) dotMats[0].emissiveIntensity = 1.0;
       },
     };
   },

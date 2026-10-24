@@ -116,6 +116,25 @@ build(kit) {
 
 用的都是 three 官方 API，签名与 `THREE.*` 一致，**没有魔法**。不确定就看 `src/engine/kit.js` 源码。
 
+### 2.1 `kit.detail`（缩写 `D`）—— 细节层，精细化的主力工具
+
+`src/engine/detail.js` 生成**程序化贴图**与**细零件**，八件共享。代码里通常写：
+
+```js
+const D = kit.detail;
+```
+
+| 分组 | API | 说明 |
+|---|---|---|
+| 贴图 | `D.tex.pcb` / `D.tex.brushed(hex,{repeat,dir})` / `D.tex.grain(hex,{repeat})` / `D.tex.perf` / `D.tex.plate(lines,opts)` | 返回 `{map,normalMap,roughnessMap}` 或 CanvasTexture。`pcb` 已自动挂到 `mats.pcb`；`plate` 用来做丝印铭牌/条码贴片 |
+| 材质 | `D.mat.pcb` / `D.mat.brushed(hex,opts)` / `D.mat.grain(hex,opts)` | 自带贴图的亚光材质，直接 `kit.box(..., D.mat.brushed(0x9aa0a6))` |
+| 倒角 | `D.chamferGeo(w,h,d,c,cornerR)` | **所有大块都用它代替 `kit.box`** —— 锐边接不住高光，0.5 单位级别的倒角就能让轮廓立起来 |
+| 零件 | `D.parts.cbox/screw/capacitor/inductor/pinRow/finStack/fan/port/heatpipe/smdField` | 螺丝、固态电容、电感、排针、鳍片阵、风扇（`fan()` 返回 `{group,rotor}`，叶片是真弧面）、I/O 接口、热管、SMD 阵列（`userData.fill(...)` 批量布点） |
+
+**两条铁律**：
+1. 贴图自带颜色时，材质 `color` 必须置白（`0xffffff`），否则颜色被乘两次、整体发黑。
+2. 纯 Node 环境（`tools/audit.mjs`）没有 `document`：`detail.js` 会返回 `null` 贴图并跳过挂载，几何照常可测 —— 所以**不要在零件代码里直接调 `document`**。
+
 ---
 
 ## 3. 配色（低饱和协调 —— 这是本项目的审美底线）
@@ -198,7 +217,8 @@ export const copy = {
 - **点击某个元件**（或左侧列表项）：
   1. 该元件沿 **+X**（打开侧板那一侧）抽出机箱约 0.5~0.8 个单位，看起来像
      "从机箱里拿出来给你看"；
-  2. 相机沿平滑弧线飞到它抽出来之后的机位（`focus` 偏移 × 布局 scale × `K_FOCUS`）；
+  2. 相机沿平滑弧线飞到它抽出来之后的机位。**机位距离是自动算的**（见下），
+     `focus.from` 现在只决定「从哪个方向看」；
   3. 该元件 `setExplode` 从 0 → 1（约 1.1 秒，`easeInOut`）；
   4. 其他 7 件略微缩小（0.84×）把注意力让出来；
   5. 右侧面板滑入，显示 name/en/tagline/principle/specs/legend；
@@ -219,7 +239,22 @@ node tools/place.mjs     # 纯 Node：装得进机箱吗 / 有没有穿模 / 机
 （X∈[-0.37,0.37]、Y∈[0.03,1.67]、Z∈[-0.83,0.83]）里，算两两包围盒重叠比，
 并算出「拆解态半径 ÷ 该机位距离与 fov 下的可见半径」——这个占比必须 ≤80%，
 否则元件会被画面切角（实测显卡最贪，`K_FOCUS` 就是照它定的）。
-**改了 `layout.js` 或 `K_FOCUS` 之后必须重跑一遍。**
+**改了 `layout.js` 之后必须重跑一遍。**
+
+### 5.2 元件机位自动装框（2026-10-24 起，`K_FOCUS` 已废弃）
+
+早期用固定倍率 `K_FOCUS` 推机位距离 —— 元件重做后展开态尺寸差很多，
+固定距离必然让大件顶到画面边缘（显卡重做后实测就是这样被切角的）。
+现在改成在建模时**量一次展开态包围球**，再按 fov 反解「刚好装下」的距离（`src/main.js`）：
+
+```
+fitDist = 包围球半径 / (FILL × tan(fov/2))       // FILL = 0.62，四周留 38% 白
+机位距离 = max(作者给的 |focus.from|, fitDist)      // 作者值只作下限
+画面中心 = 展开态包围球的球心                       // 有些件拆解会上抬（散热器）
+```
+
+所以 **`focus.from` 现在只决定「从哪个方向看」，`focus.look` 不再参与计算**。
+重做元件后若构图不对，先查展开态包围球里有没有离群的零件把它撑大了。
 
 ---
 

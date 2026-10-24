@@ -5,6 +5,7 @@
    ============================================================ */
 
 import * as THREE from 'three';
+import { createDetail } from './detail.js';
 
 /* ------------------------------------------------------------
    1. 共享材质库（低饱和，明度集中在 45%–78%）
@@ -45,14 +46,56 @@ function buildMaterials() {
     // 深色烟熏侧板：给"剖开看内部"用。不做真折射（太贵）。
     // 关键是颜色要深 —— 浅灰 + 低不透明度在暗底上会糊成一块白板。
     glass: P({
-      color: 0x333c45, roughness: 0.24, metalness: 0.0,
-      transparent: true, opacity: 0.3, transmission: 0.0,
+      // 密度要低：这张侧板正对镜头，一旦压到 0.3 就变成一只黑箱子，整机内部全看不见。
+      // 现在的做法是"几乎全透 + 留一点高光"，读者靠它边缘的框、螺丝和反光认出这是玻璃。
+      color: 0x7d8b96, roughness: 0.18, metalness: 0.0,
+      transparent: true, opacity: 0.09, transmission: 0.0,
       side: THREE.DoubleSide, depthWrite: false,
     }),
 
     // 风扇脚垫 / 密封
     rubber: S({ color: 0x1c1f23, roughness: 0.95, metalness: 0.0 }),
   };
+}
+
+/* ------------------------------------------------------------
+   1.5 细节层：把程序化纹理挂到共享材质上
+   ------------------------------------------------------------
+   这是整份文件里"性价比"最高的一段 —— 八个元件全部复用这几个共享材质，
+   所以在这一处加贴图，八件同时从"塑料积木"变成"有材料感的实物"。
+   注意：贴图自带颜色时，材质 color 必须置白，否则颜色会被乘两次。
+   ------------------------------------------------------------ */
+function decorate(detail, mats) {
+  const put = (m, t, color, over) => {
+    m.map = t.map;
+    if (t.roughnessMap) m.roughnessMap = t.roughnessMap;
+    if (t.normalMap) {
+      m.normalMap = t.normalMap;
+      m.normalScale = new THREE.Vector2(0.45, 0.45);
+    }
+    m.color = new THREE.Color(color);
+    if (over) Object.assign(m, over);
+    m.needsUpdate = true;
+  };
+
+  // 注意：下面每个 hex 是**贴图里烘进去的颜色**，不是材质 color —— 见 put() 的第一句话。
+  // 深色件在深色底上会糊成一片，所以整体比"真实值"亮一档：这是照明补偿，不是配色偏好。
+  put(mats.pcb, detail.tex.pcb({ base: '#2b3c3b', trace: '#3c5a52', silk: '#9ba39d' }), 0xffffff, {
+    normalScale: new THREE.Vector2(0.62, 0.62),
+    roughness: 0.72,
+  });
+  put(mats.metal, detail.tex.brushed(0xb0b6bc, { repeat: 3 }), 0xffffff);
+  put(mats.metalDark, detail.tex.brushed(0x676e76, { repeat: 3, strength: 0.07 }), 0xffffff);
+  put(mats.copper, detail.tex.brushed(0xb58467, { repeat: 2.5, strength: 0.06 }), 0xffffff);
+  put(mats.plastic, detail.tex.grain(0x9ba1a8, { repeat: 3 }), 0xffffff);
+  put(mats.plasticMid, detail.tex.grain(0x7b828a, { repeat: 3 }), 0xffffff);
+  put(mats.plasticDark, detail.tex.grain(0x494f57, { repeat: 3 }), 0xffffff);
+
+  // 金手指/触点：只加极细的凹凸，颜色不动（哑金要保准）
+  const g = detail.tex.grain(0xb99b62, { size: 128, amount: 10, repeat: 4 });
+  mats.gold.normalMap = g.normalMap;
+  mats.gold.normalScale = new THREE.Vector2(0.18, 0.18);
+  mats.gold.needsUpdate = true;
 }
 
 /* ------------------------------------------------------------
@@ -243,6 +286,13 @@ export function createKit() {
       return { tris: Math.round(tris), meshes };
     },
   };
+
+  // 细节层（程序化纹理 + 细零件库）。懒加载：纹理只有真被用到才生成。
+  const detail = createDetail(kit);
+  // 纯 Node 环境（tools/audit.mjs、tools/place.mjs）没有 document，
+  // 跳过贴图挂载 —— 几何与拆解逻辑照常可测。
+  if (typeof document !== 'undefined') decorate(detail, mats);
+  kit.detail = detail;
 
   return kit;
 }

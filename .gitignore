@@ -17,4 +17,5 @@ shots/
 tools/.audit.bundle.mjs
 
 # 注意：dist/ 是**刻意提交**的 —— 单文件 HTML 就是这个项目的成品本身，
-# 提交后仓库可以直接下载/用 GitHub Pages 打开，不必先装 node 再构建。
+# 提交后仓库可以直接下载/用 GitHub Pages 打开，不必先装 node 再构建。dist/computer-anatomy-src-*.zip
+dist/computer-anatomy-*.html
